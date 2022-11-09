@@ -1,0 +1,54 @@
+/* Copyright 2022, Contributors To LensorOS.
+* All rights reserved.
+*
+* This file is part of LensorOS.
+*
+* LensorOS is free software: you can redistribute it and/or modify
+* it under the terms of the GNU General Public License as published by
+* the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* LensorOS is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with LensorOS. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef _LENSOR_OS_ALGORITHM
+#define _LENSOR_OS_ALGORITHM
+
+#include <utility>
+
+namespace std {
+
+template <typename integer, typename ...integers>
+constexpr integer min(integer a, integer b, integers... ints) {
+    if constexpr (sizeof...(ints) == 0) return a < b ? a : b;
+    else return min(a < b ? a : b, ints...);
+}
+
+template <typename integer, typename ...integers>
+constexpr integer max(integer a, integer b, integers... ints) {
+    if constexpr (sizeof...(ints) == 0) return a < b ? a : b;
+    else return max(a < b ? a : b, ints...);
+}
+
+template <typename _It, typename _End, typename _Predicate>
+constexpr _It find_if(_It first, _End last, _Predicate pred) {
+    for (; first != last; ++first) {
+        if (pred(*first)) return first;
+    }
+    return first;
+}
+
+template <typename _It, typename _End, typename _El>
+constexpr _It find(_It begin, _End end, _El&& el) {
+    return find_if(begin, end, [el = std::forward<_El>(el)](const remove_reference_t<decltype(*declval<_It>())>& e) { return e == el; });
+}
+
+}
+
+#endif // _LENSOR_OS_ALGORITHM

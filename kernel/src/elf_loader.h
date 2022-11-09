@@ -20,10 +20,11 @@
 #ifndef LENSOR_OS_ELF_LOADER_H
 #define LENSOR_OS_ELF_LOADER_H
 
-#include <smart_pointer.h>
-#include <integers.h>
+#include "storage/device_drivers/dbgout.h"
+
 #include <elf.h>
 #include <file.h>
+#include <integers.h>
 #include <link_definitions.h>
 #include <memory/common.h>
 #include <memory/heap.h>
@@ -31,11 +32,12 @@
 #include <memory/physical_memory_manager.h>
 #include <memory/virtual_memory_manager.h>
 #include <scheduler.h>
+#include <smart_pointer.h>
 #include <tss.h>
 #include <virtual_filesystem.h>
 
 // Uncomment the following directive for extra debug output.
-//#define DEBUG_ELF
+#define DEBUG_ELF
 
 namespace ELF {
     /// Return zero when ELF header is of expected format.
@@ -98,7 +100,7 @@ namespace ELF {
 #endif /* #ifndef DEBUG_ELF */
     }
 
-    inline bool CreateUserspaceElf64Process(VFS& vfs, FileDescriptor fd) {
+    inline bool CreateUserspaceElf64Process(VFS& vfs, ProcessFileDescriptor fd) {
 #ifdef DEBUG_ELF
         dbgmsg("Attempting to add userspace process from file descriptor %d\r\n"
                , fd);
@@ -186,7 +188,7 @@ namespace ELF {
                                 , (void*)(virtAddress + t)
                                 , loadedProgram + t
                                 , flags
-                                , Memory::ShowDebug::Yes
+                                , Memory::ShowDebug::No
                                 );
                 }
             }
@@ -198,7 +200,7 @@ namespace ELF {
                     stack_flags |= (size_t)Memory::PageTableFlag::NX;}
             }
         }
-        Process* process = new Process;
+        auto* process = new Process{};
         if (process == nullptr) {
             dbgmsg_s("[ELF]: Couldn't allocate process structure for new userspace process\r\n");
             return false;
@@ -220,6 +222,23 @@ namespace ELF {
         process->add_memory_region((void*)newStackBottom,
                                    (void*)newStackBottom,
                                    UserProcessStackSize);
+
+        // Open stdin, stdout, and stderr.
+        auto meta = FileMetadata
+            ("stdout", false, vfs.StdoutDriver.get(), nullptr, 0, 0);
+
+        auto file = std::make_shared<OpenFileDescription>(vfs.StdoutDriver.get(), meta);
+        vfs.add_file(file, process);
+        vfs.add_file(file, process);
+        vfs.add_file(std::move(file), process);
+        vfs.print_debug();
+
+        dbgmsg("[ELF] ProcFds:\r\n");
+        u64 n = 0;
+        for (const auto& entry : process->FileDescriptors) {
+            dbgmsg("  %ull -> Sys %ull\r\n", n, entry);
+            n++;
+        }
 
         // New page map.
         process->CR3 = newPageTable;

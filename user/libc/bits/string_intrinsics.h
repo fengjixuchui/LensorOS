@@ -20,12 +20,19 @@
 #ifndef _LENSOR_OS_LIBC_STRING_INTRINSICS_H
 #define _LENSOR_OS_LIBC_STRING_INTRINSICS_H
 
-#include "decls.h"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-label"
+
+#include <bits/decls.h>
 #include "../sys/intrin.h"
 
 __BEGIN_DECLS__
 
-#ifdef __SSE2__
+#if defined(__SSE2__) && 0
+#    define __have_memcpy_sse_unaligned_intrin
+#endif
+
+#ifdef __have_memcpy_sse_unaligned_intrin
 
 /// Flag that indicates whether Enhanced REP MOVSB is supported.
 extern _Bool __libc_have_erms;
@@ -203,5 +210,7 @@ __inline__ void* __memcpy_naive(void* __restrict__ __dest, const void* __restric
 }
 
 __END_DECLS__
+
+#pragma GCC diagnostic pop
 
 #endif //_LENSOR_OS_LIBC_STRING_INTRINSICS_H

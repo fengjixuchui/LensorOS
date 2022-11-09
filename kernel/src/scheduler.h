@@ -23,7 +23,11 @@
 #include <integers.h>
 #include <interrupts/interrupts.h>
 #include <linked_list.h>
+#include <memory/physical_memory_manager.h>
 #include <memory/region.h>
+#include <vector>
+#include <extensions>
+#include <vfs_forward.h>
 
 namespace Memory {
     class PageTable;
@@ -60,16 +64,13 @@ struct CPUState {
 
 typedef u64 pid_t;
 
-/* TODO:
- * |-- Each process should store a list of memory regions that are
- * |   associated with that process. These memory regions are created
- * |   through memory-allocating system calls (similar to `mmap`).
- * |-- File Descriptor Table (Dynamic list of process' open file descriptors).
- * |   We should probably just store indices into `VFS::Opened` table.
- * `-- As only processes should make syscalls, should syscalls be defined in terms of process?
- */
 struct Process {
     pid_t ProcessID = 0;
+
+    enum ProcessState {
+        RUNNING,
+        SLEEPING,
+    } State = RUNNING;
 
     // Keep track of memory that should be freed when the process exits.
     SinglyLinkedList<Memory::Region> Memories;
@@ -77,13 +78,18 @@ struct Process {
 
     // Keep track of opened files that may be freed when the process
     // exits, if no other process has it open.
-    SinglyLinkedList<usz> OpenFiles;
+    std::sparse_vector<SysFD, -1, ProcFD> FileDescriptors;
 
     Memory::PageTable* CR3 { nullptr };
 
     // Used to save/restore CPU state when a context switch occurs.
     CPUState CPU;
 
+    Process() = default;
+
+    /// Processes are not copyable.
+    Process(const Process&) = delete;
+    Process& operator=(const Process&) = delete;
 
     void add_memory_region(void* vaddr, void* paddr, usz size) {
         Memories.add({vaddr, paddr, size});
@@ -92,7 +98,7 @@ struct Process {
     /// Find region in memories by vaddr and remove it.
     void remove_memory_region(void* vaddr) {
         usz index = 0;
-        SinglyLinkedListNode<Memory::Region>* region_it = Memories.head();
+        auto* region_it = Memories.head();
         for (; region_it; region_it = region_it->next()) {
             if (region_it->value().vaddr == vaddr) {
                 break;
@@ -105,7 +111,10 @@ struct Process {
     }
 
     void destroy() {
-        // TODO: Free memory regions.
+        // Free memory regions.
+        Memories.for_each([](SinglyLinkedListNode<Memory::Region>* it){
+            Memory::free_pages(it->value().paddr, it->value().pages);
+        });
         // TODO: Close open files.
         // TODO: Free page table?
     }

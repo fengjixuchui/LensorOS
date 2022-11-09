@@ -14,29 +14,15 @@
 * GNU General Public License for more details.
 *
 * You should have received a copy of the GNU General Public License
-* along with LensorOS. If not, see <https://www.gnu.org/licenses/>.
-*/
+* along with LensorOS. If not, see <https://www.gnu.org/licenses
+ */
+#ifndef _LENSOROS_CSTRING
+#define _LENSOROS_CSTRING
 
-#ifndef _LENSOR_OS_LIBC_DECLS_H
-#define _LENSOR_OS_LIBC_DECLS_H
-
-#ifdef __cplusplus
-#define __BEGIN_DECLS__ extern "C" {
-#define __END_DECLS__ }
+#ifdef __kernel__
+#include <cstr.h>
 #else
-#define __BEGIN_DECLS__
-#define __END_DECLS__
+#include <string.h>
 #endif
 
-#ifndef __forceinline
-#define __forceinline __inline__ __attribute__((__always_inline__))
-#endif
-
-/// Some C++ compilers don't define _Bool.
-#ifdef __cplusplus
-__BEGIN_DECLS__
-typedef bool _Bool;
-__END_DECLS__
-#endif
-
-#endif // _LENSOR_OS_LIBC_DECLS_H
+#endif // _LENSOROS_CSTRING

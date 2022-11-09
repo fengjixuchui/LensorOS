@@ -23,7 +23,9 @@ set( LensorOS_LANGUAGES ASM_NASM CXX )
 include( "${CMAKE_CURRENT_LIST_DIR}/config.cmake" )
 
 # Use LensorOS GNU-based toolchain by default.
-set( CMAKE_TOOLCHAIN_FILE lensor_gnu_toolchain.cmake )
+set( CMAKE_TOOLCHAIN_FILE lensor_gnu_toolchain.cmake)
+
+set( CMAKE_CXX_STANDARD 20 )
 
 # Use `ccache` if it is installed in system's PATH.
 find_program( CCACHE_PROGRAM ccache )
@@ -39,6 +41,10 @@ set( EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin )
 
 
 project( LensorOS VERSION ${LensorOS_VERSION} LANGUAGES ${LensorOS_LANGUAGES} )
+
+add_definitions(-D__kernel__)
+
+include_directories( "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/../std/include")
 
 # Interrupts must be compiled with general registers only.
 add_library(
@@ -131,6 +137,14 @@ target_compile_options(
   -Wall
   -Wextra
   -Werror
+
+  -Wno-error=deprecated-enum-enum-conversion
+
+  ## C++20 deprecates volatile |= and &=. That's nonsense, so we disable this warning.
+  ##
+  ## If you don't believe me that it's nonsense, C++23 de-deprecates them because they
+  ## realised that this is nonsense.
+  -Wno-volatile
 )
 target_link_options(
   Kernel PRIVATE
@@ -361,13 +375,13 @@ if ( QEMU_PROGRAM )
     -cpu qemu64
     # Multiple processors (commented until utilized).
     #-smp 8,sockets=2,cores=2,threads=2,maxcpus=8
-    # One hundred megabytes of RAM.
-    -m 100M
+    # One thousand megabytes of RAM.
+    -m 1000M
     # Use local time as real time clock base.
     -rtc base=localtime,clock=host,driftfix=none
     # This is deprecated, but we'll use it,
     # until we write an actual sound driver.
-    -soundhw pcspk
+#    -soundhw pcspk
     # No networking drivers yet.
     -net none
     # Show extra information regarding triple faults.

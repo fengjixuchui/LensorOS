@@ -54,7 +54,7 @@ namespace Scheduler {
                  "  Process Queue:\r\n");
         ProcessQueue->for_each([](auto* it) {
             Process& process = *it->value();
-            dbgmsg("    Process %ull:\r\n"
+            dbgmsg("    Process %ull at %x\r\n"
                    "      CR3:      %x\r\n"
                    "      RAX:      %x\r\n"
                    "      RBX:      %x\r\n"
@@ -79,6 +79,7 @@ namespace Scheduler {
                    "        RSP:    %x\r\n"
                    "        SS:     %x\r\n"
                    , process.ProcessID
+                   , &process
                    , process.CR3
                    , process.CPU.RAX
                    , process.CPU.RBX
@@ -102,6 +103,10 @@ namespace Scheduler {
                    , process.CPU.Frame.sp
                    , process.CPU.Frame.ss
                    );
+            dbgmsg("      File Descriptors:\r\n");
+            for (const auto& [procfd, fd] : process.FileDescriptors.pairs()) {
+                dbgmsg("        %ull -> SysFD %ull\r\n", u64(procfd), u64(fd));
+            }
         });
         dbgmsg_s("\r\n");
     }
@@ -125,8 +130,8 @@ namespace Scheduler {
             }
         });
         if (processToRemove) {
-            // TODO: Actually de-allocate memory!!!
             ProcessQueue->remove(processToRemoveIndex);
+            processToRemove->destroy();
             return true;
         }
         return false;
@@ -171,7 +176,7 @@ namespace Scheduler {
                 include = IncludeGivenProcess::No;
             }
             else NextProcess = NextProcess->next();
-            if (NextProcess != nullptr)
+            if (NextProcess != nullptr && NextProcess->value()->State == Process::RUNNING)
                 break;
         }
         return NextProcess;

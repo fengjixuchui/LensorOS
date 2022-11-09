@@ -21,24 +21,21 @@
 #ifndef _UNISTD_H
 #define _UNISTD_H
 
+#include <bits/decls.h>
 #include "sys/types.h"
 
-#if defined (__cplusplus)
-extern "C" {
-#endif
+__BEGIN_DECLS__
 
-#define STDOUT_FILENO 0
+#define STDIN_FILENO 0
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
 
-    int open(const char* path, int flags, int mode);
-    void close(int fd);
+int open(const char* path, int flags, int mode);
+void close(int fd);
 
-    ssize_t read(int fd, const void* buffer, size_t count);
-    ssize_t write(int fd, const void* buffer, size_t count);
+ssize_t read(int fd, const void* buffer, size_t count);
+ssize_t write(int fd, const void* buffer, size_t count);
 
-  __attribute__((noreturn)) void exit(int status);
-
-#if defined (__cplusplus)
-} /* extern "C" */
-#endif
+__END_DECLS__
 
 #endif /* _UNISTD_H */
