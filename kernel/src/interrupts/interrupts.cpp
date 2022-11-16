@@ -21,13 +21,17 @@
 
 #include <basic_renderer.h>
 #include <cstr.h>
+#include <format>
 #include <io.h>
 #include <keyboard.h>
+#include <keyboard_scancode_translation.h>
 #include <mouse.h>
 #include <panic.h>
 #include <pit.h>
 #include <rtc.h>
 #include <uart.h>
+#include <system.h>
+#include <vfs_forward.h>
 
 void enable_interrupt(u8 irq) {
     if (irq > 15)
@@ -66,9 +70,11 @@ inline void end_of_interrupt(u8 IRQx) {
     out8(PIC1_COMMAND, PIC_EOI);
 }
 
+_PushIgnoreWarning("-Wvolatile")
 void cause_div_by_zero(volatile u8 one) {
     one /= one - 1;
 }
+_PopWarnings()
 
 void cause_page_not_present() {
     u8* badAddr = (u8*)0xdeadc0de;
@@ -99,9 +105,29 @@ void system_timer_handler(InterruptFrame* frame) {
 /// IRQ1: PS/2 KEYBOARD
 __attribute__((interrupt))
 void keyboard_handler(InterruptFrame* frame) {
-    // TODO: Write key input to stdin of SHELL process.
-    // TODO: Register a key input in the event system...
-    Keyboard::gText.handle_scancode(in8(0x60));
+    u8 scancode = in8(0x60);
+    // Kernel text renderer silliness.
+    Keyboard::gText.handle_scancode(scancode);
+    // Send user input to userspace!
+    Process* init = SYSTEM->init_process();
+    if (init) {
+        // TODO: Support other keyboard scancode translation layouts.
+        unsigned char character = Keyboard::QWERTY::Translate
+            (scancode,
+             Keyboard::gText.State.LeftShift
+             || Keyboard::gText.State.RightShift
+             || Keyboard::gText.State.CapsLock
+             );
+        if (character) {
+            // Write translated character to stdin of non-current process.
+            auto fd = static_cast<ProcFD>(0);
+            auto sysfd = init->FileDescriptors[fd];
+            auto f = SYSTEM->virtual_filesystem().file(*sysfd);
+            if (f) {
+                f->device_driver()->write(f.get(), 0, sizeof(char), &character);
+            }
+        }
+    }
     end_of_interrupt(1);
 }
 
@@ -201,20 +227,17 @@ void page_fault_handler(InterruptFrameError* frame) {
         }
     }
     if ((frame->error & (u64)PageFaultErrorCode::InstructionFetch) > 0)
-        UART::out("  Instruction fetch\r\n");
+        std::print("  Instruction fetch\n");
     if ((frame->error & (u64)PageFaultErrorCode::ShadowStackAccess) > 0)
-        UART::out("  Shadow stack access\r\n");
+        std::print("  Shadow stack access\n");
     if ((frame->error & (u64)PageFaultErrorCode::HypervisorManagedLinearAddressTranslation) > 0)
-        UART::out("  Hypvervisor-managed linear address translation\r\n");
+        std::print("  Hypvervisor-managed linear address translation\n");
     if ((frame->error & (u64)PageFaultErrorCode::SoftwareGaurdExtensions) > 0)
-        UART::out("  Software gaurd extensions\r\n");
+        std::print("  Software gaurd extensions\n");
 
-    UART::out("  Faulty Address: 0x");
-    UART::out(to_hexstring(address));
-    UART::out("\r\n");
+    std::print("  Faulty Address: {:#016x}\n", address);
     Vector2<u64> drawPosition = { PanicStartX, PanicStartY };
-    gRend.puts(drawPosition, "Faulty Address: 0x", 0x00000000);
-    gRend.puts(drawPosition, to_hexstring(address), 0x00000000);
+    gRend.puts(drawPosition, std::format("Faulty Address: {:#016x}", address), 0x00000000);
     gRend.swap({ PanicStartX, PanicStartY }, { 1024, 128 } );
     while (true)
         asm ("hlt");
@@ -235,19 +258,17 @@ void stack_segment_fault_handler(InterruptFrameError* frame) {
     else panic(frame, "Stack segment fault detected (selector)!");
 
     if (frame->error & 0b1)
-        UART::out("  External\r\n");
+        std::print("  External\n");
 
     u8 table = (frame->error & 0b110) >> 1;
     if (table == 0b00)
-        UART::out("  GDT");
+        std::print("  GDT");
     else if (table == 0b01 || table == 0b11)
-        UART::out("  IDT");
+        std::print("  IDT");
     else if (table == 0b10)
-        UART::out("  LDT");
-    
-    UART::out(" Selector Index: ");
-    UART::out(to_hexstring(((frame->error & 0b1111111111111000) >> 3)));
-    UART::out("\r\n");
+        std::print("  LDT");
+
+    std::print(" Selector Index: {:x}\n", (frame->error & 0b1111'1111'1111'1000) >> 3);
 }
 
 __attribute__((interrupt))
@@ -257,19 +278,17 @@ void general_protection_fault_handler(InterruptFrameError* frame) {
     else panic(frame, "General protection fault detected (selector)!");
 
     if (frame->error & 0b1)
-        UART::out("  External\r\n");
-    
+        std::print("  External\n");
+
     u8 table = (frame->error & 0b110) >> 1;
     if (table == 0b00)
-        UART::out("  GDT");
+        std::print("  GDT");
     else if (table == 0b01 || table == 0b11)
-        UART::out("  IDT");
+        std::print("  IDT");
     else if (table == 0b10)
-        UART::out("  LDT");
-    
-    UART::out(" Selector Index: ");
-    UART::out(to_hexstring(((frame->error & 0b1111111111111000) >> 3)));
-    UART::out("\r\n");
+        std::print("  LDT");
+
+    std::print(" Selector Index: {:x}\n", (frame->error & 0b1111'1111'1111'1000) >> 3);
     while (true)
         asm ("hlt");
 }

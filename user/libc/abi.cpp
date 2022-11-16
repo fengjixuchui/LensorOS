@@ -1,33 +1,45 @@
 /* Copyright 2022, Contributors To LensorOS.
-* All rights reserved.
-*
-* This file is part of LensorOS.
-*
-* LensorOS is free software: you can redistribute it and/or modify
-* it under the terms of the GNU General Public License as published by
-* the Free Software Foundation, either version 3 of the License, or
-* (at your option) any later version.
-*
-* LensorOS is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-* GNU General Public License for more details.
-*
-* You should have received a copy of the GNU General Public License
-* along with LensorOS. If not, see <https://www.gnu.org/licenses/>.
-*/
+ * All rights reserved.
+ *
+ * This file is part of LensorOS.
+ *
+ * LensorOS is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * LensorOS is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with LensorOS. If not, see <https://www.gnu.org/licenses/>.
+ */
 
+#include <format>
+#include <string_view>
 
-#include <bits/decls.h>
+#include <assert.h>
 #include <bits/abi.h>
+#include <bits/decls.h>
 #include <stdlib.h>
 #include <unistd.h>
+
+//#define DEBUG_LIBC
+
+#ifdef DEBUG_LIBC
+#define DBGMSG(...) debug_print(__VA_ARGS__)
+#else
+#define DBGMSG(...)
+#endif
 
 
 /// ===========================================================================
 ///  Extern symbols.
 /// ===========================================================================
 __BEGIN_DECLS__
+
 using init_cb = void (*)();
 
 /// Global constructors and destructors. These symbols are provided by the linker.
@@ -38,7 +50,8 @@ extern init_cb __init_array_end[];
 extern init_cb __fini_array_start[];
 extern init_cb __fini_array_end[];
 
-bool __in_quick_exit = false;
+__bool __in_quick_exit = false;
+
 __END_DECLS__
 
 /// ===========================================================================
@@ -67,6 +80,39 @@ dso_atexit_list* find_dso_atexit_list(__dso_handle_t dso) {
         }
     }
     return nullptr;
+}
+
+struct raw_stderr_insert_iterator {
+    raw_stderr_insert_iterator& append(const char* str, size_t len) {
+        write(STDERR_FILENO, str, len);
+        return *this;
+    }
+
+    raw_stderr_insert_iterator& append(const char* str) {
+        write(STDERR_FILENO, str, strlen(str));
+        return *this;
+    }
+
+    raw_stderr_insert_iterator& append(const std::string_view& str) {
+        write(STDERR_FILENO, str.data(), str.size());
+        return *this;
+    }
+
+    raw_stderr_insert_iterator& operator=(const char* str) {
+        return append(str);
+    }
+
+    raw_stderr_insert_iterator& operator=(const std::string_view& str) {
+        return append(str);
+    }
+};
+
+/// Print to stderr. This can be used even if stdio hasn’t been initialised yet.
+template <typename... _Args>
+void debug_print(std::format_string<_Args...> __fmt, _Args&&... __args) {
+    using _Output = raw_stderr_insert_iterator;
+    std::basic_format_context<_Output, char> __ctx(_Output{}, std::__detail::__make_args<_Output, char, _Args...>(std::forward<_Args>(__args)...));
+    std::__detail::__format(std::move(__ctx), __fmt.get());
 }
 
 } // namespace
@@ -140,6 +186,17 @@ void __cxa_finalize(__dso_handle_t dso) {
 /// Call global constructors.
 void __libc_init() noexcept {
     __libc_init_malloc();
+
+    DBGMSG("[LibC] Calling global constructors\n");
+
+    DBGMSG("[LibC] Searching preinit array at {}\n", (void*) __preinit_array_start);
+    for (init_cb* cb = __preinit_array_start; cb != __preinit_array_end; ++cb)
+        DBGMSG("    Found preinit callback at {}\n", (void*) *cb);
+
+    DBGMSG("[LibC] Searching init array at {}\n", (void*) __init_array_start);
+    for (init_cb* cb = __init_array_start; cb != __init_array_end; ++cb)
+        DBGMSG("    Found init callback at {}\n", (void*) *cb);
+
     for (init_cb* cb = __preinit_array_start; cb != __preinit_array_end; ++cb) { (*cb)(); }
     for (init_cb* cb = __init_array_start; cb != __init_array_end; ++cb) { (*cb)(); }
 }

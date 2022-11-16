@@ -83,6 +83,7 @@ add_executable(
   src/cpuid.cpp
   src/cstr.cpp
   src/debug.cpp
+  src/devices/devices.cpp
   src/efi_memory.cpp
   src/gdt.cpp
   src/gpt.cpp
@@ -108,6 +109,10 @@ add_executable(
   src/rtc.cpp
   src/scheduler.cpp
   src/spinlock.cpp
+  src/storage/device_drivers/dbgout.cpp
+  src/storage/device_drivers/input.cpp
+  src/storage/device_drivers/pipe.cpp
+  src/storage/device_drivers/port_controller.cpp
   src/storage/filesystem_drivers/file_allocation_table.cpp
   src/system.cpp
   src/tss.cpp
@@ -375,13 +380,10 @@ if ( QEMU_PROGRAM )
     -cpu qemu64
     # Multiple processors (commented until utilized).
     #-smp 8,sockets=2,cores=2,threads=2,maxcpus=8
-    # One thousand megabytes of RAM.
-    -m 1000M
+    # One hundred megabytes of RAM.
+    -m 100M
     # Use local time as real time clock base.
     -rtc base=localtime,clock=host,driftfix=none
-    # This is deprecated, but we'll use it,
-    # until we write an actual sound driver.
-#    -soundhw pcspk
     # No networking drivers yet.
     -net none
     # Show extra information regarding triple faults.
@@ -390,6 +392,17 @@ if ( QEMU_PROGRAM )
     # This allows debug messages to reach the terminal.
     -serial stdio
   )
+  if ( CMAKE_HOST_WIN32 )
+    list( APPEND QEMU_FLAGS
+      -audiodev dsound,id=audio_device
+      -machine pcspk-audiodev=audio_device
+    )
+  else()
+    list( APPEND QEMU_FLAGS
+      -audiodev oss,id=audio_device
+      -machine pcspk-audiodev=audio_device
+    )
+  endif()
   if( QEMU_DEBUG )
     list( APPEND QEMU_FLAGS -S -s )
   endif()

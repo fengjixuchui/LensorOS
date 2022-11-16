@@ -1,6 +1,9 @@
 #include <format>
 #include <stdio.h>
 
-int main() {
-    std::print("Hello, {}!\n{:x} {{+}} {:x} = {:x}", "world", 13, 29, 13 + 29);
+int main(int argc, char** argv) {
+    std::print("argc: {}\n", argc);
+    for (int i = 0; i < argc; i++) {
+        std::print("argv[{}]: {}\n", i, (const char*) argv[i]);
+    }
 }

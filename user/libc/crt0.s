@@ -20,10 +20,17 @@
     .global _start
 _start:
     ;;# Stack frame linked list null entry.
-    movq $0, %rbp
-    pushq %rbp
+    xor %rbp, %rbp
     pushq %rbp
     movq %rsp, %rbp
+
+    movq 8(%rsp), %rdi
+    lea 16(%rsp), %rsi
+    ;;# TODO: Dynamic linker will pass its deinit function in %rdx. It should
+    ;;#       be registered with atexit() and called before the program exits.
+
+    ;;# Push garbage to align the stack to 16 bytes.
+    pushq %rax
 
     call __libc_run_main
 
