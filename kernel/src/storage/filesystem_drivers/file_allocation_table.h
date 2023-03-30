@@ -24,6 +24,7 @@
 #include <storage/filesystem_driver.h>
 #include <storage/storage_device_driver.h>
 #include <string>
+#include <vector>
 
 class FileAllocationTableDriver final : public FilesystemDriver {
     /// This constructor is only used internally in try_create() and is always
@@ -63,6 +64,65 @@ class FileAllocationTableDriver final : public FilesystemDriver {
 
     static auto fat_type(BootRecord& br) -> FATType;
 
+    /// This is so we have something that we can call begin() and end() on because
+    /// calling begin()/end() on the driver itself would be a bit weird semantically.
+    struct DirIteratorHelper {
+        FileAllocationTableDriver& Driver;
+        u32 ClusterIndex = Driver.BR.sector_to_cluster(Driver.BR.first_root_directory_sector());
+
+        /// This does the actual iterating.
+        struct Iterator {
+            FileAllocationTableDriver& Driver;
+            u32 ClusterIndex;
+
+            /// Constants.
+            const u64 ClusterSize = Driver.BR.BPB.NumSectorsPerCluster * Driver.BR.BPB.NumBytesPerSector;
+
+            /// Iteration data.
+            std::vector<u8> ClusterContents{ClusterSize};
+            u64 LastFATSector = 0;
+            bool MoreClusters = true;
+            bool ClearLFN = false;
+
+            /// The current entry.
+            struct EntryType {
+                ClusterEntry* CE{};
+                u64 ByteOffset{};
+                std::string FileName;
+                std::string LongFileName;
+            } Entry{};
+
+            explicit Iterator(FileAllocationTableDriver& driver, u32 directoryCluster);
+            auto operator++() -> Iterator&;
+            auto operator*() -> EntryType& { return Entry; }
+            auto operator->() -> EntryType* { return &Entry; }
+            bool operator!=(std::default_sentinel_t) const { return MoreClusters; }
+
+        private:
+            /// Read the next cluster unconditionally.
+            void ReadNextCluster();
+
+            /// Read the next cluster if there is one. If there isn’t, set MoreClusters to false.
+            void TryReadNextCluster();
+        };
+
+        DirIteratorHelper(FileAllocationTableDriver& driver) : Driver(driver) {}
+        DirIteratorHelper(FileAllocationTableDriver& driver, u32 directoryCluster)
+        : Driver(driver), ClusterIndex(directoryCluster) {}
+
+        /// Get an iterator that points to the first entry.
+        auto begin() -> Iterator { return Iterator{Driver, ClusterIndex}; }
+
+        /// We don’t really have a predetermined ‘end’, so this just returns a dummy value.
+        auto end() -> std::default_sentinel_t { return {}; }
+    };
+
+    auto for_each_dir_entry() -> DirIteratorHelper { return DirIteratorHelper{*this}; }
+    auto for_each_dir_entry_in(u32 directoryCluster) -> DirIteratorHelper { return DirIteratorHelper{*this, directoryCluster}; }
+
+    /// NOTE: If directoryCluster == -1, it will be replaced with the directory cluster of the root directory.
+    std::shared_ptr<FileMetadata> traverse_path(std::string_view raw_path, u32 directoryCluster = -1);
+
 public:
     static void print_fat(BootRecord&);
 
@@ -77,8 +137,12 @@ public:
         return Device->read_raw(offs, bytes, buffer);
     }
 
-    ssz write(FileMetadata* file, usz offs, usz size, void* buffer) final {
-        return Device->write(file, usz(file->driver_data()) + offs, size, buffer);
+    ssz write(FileMetadata* file, usz offset, usz size, void* buffer) final {
+        // TODO: Fail? if this would increase file size. I feel like we
+        // don't want to write past the end of the file, just in case
+        // there is stuff there, right? So we will have to figure out
+        // how to make a file bigger in FAT.
+        return Device->write(file, usz(file->driver_data()) + offset, size, buffer);
     }
 
     const char* name() final { return "File Allocation Table"; }
@@ -88,7 +152,7 @@ public:
     /// Try to create a FileAllocationTableDriver from the given storage device.
     static auto try_create(std::shared_ptr<StorageDeviceDriver>) -> std::shared_ptr<FilesystemDriver>;
 
-    static auto translate_path(std::string_view path) -> std::string;
+    static auto translate_filename(std::string_view path) -> std::string;
 };
 
 #endif /* LENSOR_OS_FILE_ALLOCATION_TABLE_DRIVER_H */

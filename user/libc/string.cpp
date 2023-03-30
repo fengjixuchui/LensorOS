@@ -21,7 +21,10 @@
 #include "string.h"
 
 #include "errno.h"
+#include "bits/stub.h"
 
+#include <string>
+#include <string_view>
 
 // TODO: Set this at runtime initialization based on cpuid bits or some
 // other way of accessing the kernel CPU data.
@@ -92,6 +95,7 @@ int strcmp(const char* s1, const char* s2) {
 
 int strcoll(const char* s1, const char* s2) {
     // TODO: Implement me!
+    _LIBC_STUB();
     return 1;
 }
 
@@ -109,6 +113,7 @@ int strncmp(const char* s1, const char* s2, size_t n) {
 
 size_t strxfrm(char* dst, const char* src, size_t n) {
     // TODO: Implement me!
+    _LIBC_STUB();
     return 1;
 }
 
@@ -133,21 +138,9 @@ char* strchr(const char* str, int chr) {
 }
 
 size_t strcspn(const char* src, const char* reject) {
-    if (reject[0] == '\0')
-        return 0;
-    bool go_on = true;
-    size_t ret = 0;
-    size_t len = strlen(reject);
-    while (*src++ && go_on) {
-        go_on = false;
-        for (size_t i = 0; i < len; ++i)
-            if (*src != reject[i]) {
-                go_on = true;
-                break;
-            }
-        ret++;
-    }
-    return ret;
+    auto source = std::string_view(src);
+    size_t out = source.find_first_of(std::string_view(reject));
+    return out == std::string::npos ? source.size() : out;
 }
 
 char* strpbrk(const char* src, const char* accept) {
@@ -172,21 +165,9 @@ char* strrchr(const char* str, int chr) {
 }
 
 size_t strspn(const char* src, const char* accept) {
-    if (accept[0] == '\0')
-        return 0;
-    bool go_on = true;
-    size_t ret = 0;
-    size_t len = strlen(accept);
-    while (*src++ && go_on) {
-        go_on = false;
-        for (size_t i = 0; i < len; ++i)
-            if (*src == accept[i]) {
-                go_on = true;
-                break;
-            }
-        ret++;
-    }
-    return ret;
+    auto source = std::string_view(src);
+    size_t out = source.find_first_not_of(std::string_view(accept));
+    return out == std::string::npos ? source.size() : out;
 }
 
 int strstr_compare(const char* s1, const char* s2) {
@@ -200,8 +181,7 @@ int strstr_compare(const char* s1, const char* s2) {
 }
 
 char* strstr(const char* haystack, const char* needle) {
-    while (*haystack != '\0')
-    {
+    while (*haystack != '\0') {
         if ((*haystack == *needle) && strstr_compare(haystack, needle))
             return (char*)haystack;
         haystack++;

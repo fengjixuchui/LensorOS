@@ -39,8 +39,9 @@ extern kmain
 
 ;;# Allocate known good stack
 SECTION .bss
-align 0x1000
+align PAGE_SIZE
 prekernel_stack_bottom:
+    ;;# 64 KiB stack
     resb 0x16000
 prekernel_stack_top:
 
@@ -54,7 +55,7 @@ prekernel_pml4:
 %rep ENTRIES_PER_PAGE_TABLE - 2
     dq 0
 %endrep
-    dq V2P(prekernel_pml3_high) + (PAGE_PRESENT | PAGE_READ_WRITE | PAGE_GLOBAL)
+    dq V2P(prekernel_pml3_high) + (PAGE_PRESENT | PAGE_READ_WRITE)
 prekernel_pml3:
     dq V2P(prekernel_pml2) + (PAGE_PRESENT | PAGE_READ_WRITE)
 %rep ENTRIES_PER_PAGE_TABLE - 1
@@ -64,10 +65,10 @@ prekernel_pml3_high:
 %rep ENTRIES_PER_PAGE_TABLE - 2
     dq 0
 %endrep
-    dq V2P(prekernel_pml2) + (PAGE_PRESENT | PAGE_READ_WRITE | PAGE_GLOBAL)
+    dq V2P(prekernel_pml2) + (PAGE_PRESENT | PAGE_READ_WRITE)
     dq 0
 prekernel_pml2:
-    dq V2P(prekernel_pml1) + (PAGE_PRESENT | PAGE_READ_WRITE | PAGE_GLOBAL)
+    dq V2P(prekernel_pml1) + (PAGE_PRESENT | PAGE_READ_WRITE)
 %rep ENTRIES_PER_PAGE_TABLE - 1
     dq 0
 %endrep
@@ -110,7 +111,7 @@ _start:
     mov rax, V2P(prekernel_pml1)
 %assign i 0
 %rep ENTRIES_PER_PAGE_TABLE
-    mov QWORD [rax], (i << 12) + (PAGE_PRESENT | PAGE_READ_WRITE | PAGE_GLOBAL)
+    mov QWORD [rax], (i << 12) + (PAGE_PRESENT | PAGE_READ_WRITE)
     add rax, 8
 %assign i i+1
 %endrep

@@ -28,9 +28,11 @@
 #include <kstage1.h>
 #include <math.h>
 #include <memory/common.h>
+#include <memory/paging.h>
 #include <memory/physical_memory_manager.h>
 #include <pit.h>
 #include <rtc.h>
+#include <scheduler.h>
 
 void print_memory_info(Vector2<u64>& position) {
     u32 startOffset = position.x;
@@ -63,66 +65,25 @@ void print_now(Vector2<u64>& position) {
 extern "C" void kmain(BootInfo* bInfo) {
     // The heavy lifting is done within the kstage1 function.
     kstage1(bInfo);
-    std::print("\n\033[1;33m!===--- You have now booted into LensorOS ---===!\033[0m\n");
-    // Clear + swap screen (ensure known state: blank).
-    gRend.clear(0x00000000);
-    gRend.swap();
-    // GPLv3 LICENSE REQUIREMENT (interactive terminal must print copyright notice).
-    const char* GPLv3 = "LensorOS  Copyright (C) 2022, Contributors To LensorOS.";
-    // TO SERIAL
-    std::print("{}\n\n", GPLv3);
-    // TO SCREEN
-    Vector2<u64> drawPosition = { 0, 0 };
-    gRend.BackgroundColor = 0xffffffff;
-    gRend.puts(drawPosition, GPLv3, 0x00000000);
-    gRend.BackgroundColor = 0x00000000;
-    gRend.crlf(drawPosition);
-    // END GPLv3 LICENSE REQUIREMENT.
-    gRend.puts(drawPosition, "Do a barrel roll!");
-    gRend.crlf(drawPosition);
-    gRend.swap({0, 0}, {80000, gRend.Font->PSF1_Header->CharacterSize * 2u});
-
     // I'm lovin' it :^) (Plays Maccy's theme).
-    constexpr double MACCYS_BPM = 125;
-    constexpr double MACCYS_STEP_LENGTH_SECONDS = (60 / MACCYS_BPM) / 4;
-    gPIT.play_sound(262, MACCYS_STEP_LENGTH_SECONDS); // C4
-    gPIT.play_sound(294, MACCYS_STEP_LENGTH_SECONDS); // D4
-    gPIT.wait();                                      // Rest
-    gPIT.play_sound(330, MACCYS_STEP_LENGTH_SECONDS); // E4
-    gPIT.wait();                                      // Rest
-    gPIT.play_sound(440, MACCYS_STEP_LENGTH_SECONDS); // A4
-    gPIT.wait();                                      // Rest
-    gPIT.play_sound(392, MACCYS_STEP_LENGTH_SECONDS); // G4
+    constexpr usz MACCYS_BPM = 125;
+    constexpr usz MACCYS_STEP_LENGTH_MILLISECONDS = (60 * 1000 / MACCYS_BPM) / 4;
+    gPIT.play_sound(262, MACCYS_STEP_LENGTH_MILLISECONDS); // C4
+    gPIT.play_sound(294, MACCYS_STEP_LENGTH_MILLISECONDS); // D4
+    gPIT.wait();                                           // Rest
+    gPIT.play_sound(330, MACCYS_STEP_LENGTH_MILLISECONDS); // E4
+    gPIT.wait();                                           // Rest
+    gPIT.play_sound(440, MACCYS_STEP_LENGTH_MILLISECONDS); // A4
+    gPIT.wait();                                           // Rest
+    gPIT.play_sound(392, MACCYS_STEP_LENGTH_MILLISECONDS); // G4
 
-    // Start keyboard input at draw position, not origin.
-    Keyboard::gText.set_cursor_from_pixel_position(drawPosition);
-
-    u32 debugInfoX = gRend.Target->PixelWidth - 300;
     for (;;) {
-        //std::print("DRAWING\n");
-        drawPosition = {debugInfoX, 0};
-        // PRINT REAL TIME
-        gRTC.update_data();
-        print_now(drawPosition);
-        gRend.crlf(drawPosition, debugInfoX);
-        // PRINT PIT ELAPSED TIME.
-        gRend.puts(drawPosition, std::format("PIT Elapsed: {:.3}", gPIT.seconds_since_boot()));
-        gRend.crlf(drawPosition, debugInfoX);
-        // PRINT RTC ELAPSED TIME.
-        gRend.puts(drawPosition, std::format("RTC Elapsed: {:.3}", gRTC.seconds_since_boot()));
-        gRend.crlf(drawPosition, debugInfoX);
-        // PRINT HPET ELAPSED TIME.
-        gRend.puts(drawPosition, std::format("HPET Elapsed: {:.3}", gHPET.seconds()));
-        gRend.crlf(drawPosition, debugInfoX);
-        // PRINT MEMORY INFO.
-        gRend.crlf(drawPosition, debugInfoX);
-        print_memory_info(drawPosition);
-        // UPDATE TOP RIGHT CORNER OF SCREEN.
-        gRend.swap({debugInfoX, 0}, {80000, 400});
-
-        // Idle until next interrupt.
-        // FIXME: This doesn’t work because it causes the keyboard to become unresponsive.
-        //asm volatile ("hlt");
+        // Tasks that need done frequently should go here.
+        for (Memory::PageTable* table : Scheduler::PageMapsToFree) {
+            //std::print("Freeing page table at {}\n", (void*)table);
+            Memory::free_page_map(table);
+        }
+        Scheduler::PageMapsToFree.clear();
     }
 
     // HALT LOOP (KERNEL INACTIVE).

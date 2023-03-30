@@ -49,6 +49,8 @@ namespace Memory {
     u64 TotalUsedPages { 0 };
     u64 MaxFreePagesInARow { 0 };
 
+    u64 FirstFreePage { 0 };
+
     u64 total_ram() {
         return TotalPages * PAGE_SIZE;
     }
@@ -57,6 +59,26 @@ namespace Memory {
     }
     u64 used_ram() {
         return TotalUsedPages * PAGE_SIZE;
+    }
+
+    void print_physmem() {
+        std::print("PHYSMEM:\n");
+        for (usz i = 0; i + 1 < PageMap.length();) {
+            bool locked = PageMap.get(i);
+            bool last_locked = locked;
+            usz begin = i;
+            usz run = 1;
+            //std::print("  begrun page at {:16x} is locked? {}\n", begin * PAGE_SIZE, last_locked);
+            ++i;
+            while (i < PageMap.length()) {
+                locked = PageMap.get(i);
+                if (locked != last_locked) break;
+                ++run;
+                ++i;
+            }
+            //std::print("  endrun page at {:16x} is locked? {}\n", i * PAGE_SIZE, locked);
+            std::print("  {}: {} pages beginning at {:16x} through {:16x}\n", last_locked ? "used" : "free", run, begin * PAGE_SIZE, (begin + run) * PAGE_SIZE);
+        }
     }
 
     void lock_page(void* address) {
@@ -76,15 +98,29 @@ namespace Memory {
             lock_page((void*)((u64)address + (i * PAGE_SIZE)));
     }
 
-    void free_page(void* address) {
+    void free_page_impl(void* address) {
         u64 index = (u64)address / PAGE_SIZE;
-        if (PageMap.get(index) == false)
-            return;
-
         if (PageMap.set(index, false)) {
+            if (index < FirstFreePage) {
+                FirstFreePage = index;
+            }
             TotalUsedPages -= 1;
             TotalFreePages += 1;
         }
+    }
+
+    void free_page(void* address) {
+        DBGMSG("free_page():\n"
+               "  Address:     {}\n"
+               "  Free before: {}\n"
+               , address
+               , TotalFreePages);
+
+        free_page_impl(address);
+
+        DBGMSG("  Free after:  {}\n"
+               "\n"
+               , TotalFreePages);
     }
 
     void free_pages(void* address, u64 numberOfPages) {
@@ -96,14 +132,13 @@ namespace Memory {
                , numberOfPages
                , TotalFreePages);
         for (u64 i = 0; i < numberOfPages; ++i)
-            free_page((void*)((u64)address + (i * PAGE_SIZE)));
+            free_page_impl((void*)((u64)address + (i * PAGE_SIZE)));
 
-        DBGMSG("  Free after: {}\n"
+        DBGMSG("  Free after:  {}\n"
                "\n"
                , TotalFreePages);
     }
 
-    u64 FirstFreePage { 0 };
     void* request_page() {
         DBGMSG("request_page():\n"
                "  Free pages:            {}\n"
@@ -111,7 +146,7 @@ namespace Memory {
                "\n"
                , TotalFreePages
                , MaxFreePagesInARow);
-        for(; FirstFreePage < TotalPages; FirstFreePage++) {
+        for(; FirstFreePage < TotalPages; ++FirstFreePage) {
             if (PageMap.get(FirstFreePage) == false) {
                 void* addr = (void*)(FirstFreePage * PAGE_SIZE);
                 lock_page(addr);
@@ -125,7 +160,7 @@ namespace Memory {
         panic("\033[31mRan out of memory in request_page() :^<\033[0m\n");
         return nullptr;
     }
-    
+
     void* request_pages(u64 numberOfPages) {
         // Can't allocate nothing!
         if (numberOfPages == 0)
@@ -144,7 +179,7 @@ namespace Memory {
                        "Number of pages requested is larger than any contiguous run of pages available.");
             return nullptr;
         }
-        
+
         DBGMSG("request_pages():\n"
                "  # of pages requested:  {}\n"
                "  Free pages:            {}\n"

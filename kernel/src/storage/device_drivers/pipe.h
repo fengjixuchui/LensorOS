@@ -20,15 +20,37 @@
 #ifndef LENSOR_OS_PIPE_DRIVER_H
 #define LENSOR_OS_PIPE_DRIVER_H
 
-#include <debug.h>
 #include <integers.h>
 #include <storage/storage_device_driver.h>
+#include <storage/file_metadata.h>
+#include <scheduler.h>
+
+#include <algorithm>
+#include <memory>
+#include <vector>
+#include <string>
+#include <string_view>
+#include <format>
 
 #define PIPE_BUFSZ 512
 
+//   pipe
+//  o====o
+//  r    w
+//
+// A pipe has a read end and a write end. The write end can push data
+// into the pipe. The read end can pop data from the pipe. Pipes follow
+// the FIFO principle; first in, first out (just like a pipe in real
+// life).
+
+// TODO: Support `open` for FIFOs (named pipes).
+
 struct PipeBuffer {
-    u8 Data[PIPE_BUFSZ]{};
-    usz Offset{};
+    u8 Data[PIPE_BUFSZ]{0};
+    usz Offset{0};
+    bool ReadClosed{false};
+    bool WriteClosed{false};
+    std::vector<pid_t> PIDsWaiting;
 
     constexpr PipeBuffer() = default;
     ~PipeBuffer() = default;
@@ -39,63 +61,55 @@ struct PipeBuffer {
     /// We don’t allow moving either so we don’t accidentally move
     /// a pipe buffer while someone is reading from or writing to it.
     PipeBuffer(PipeBuffer&&) = delete;
+
+    void clear() {
+        PIDsWaiting.clear();
+        memset(&Data[0], 0, sizeof(Data));
+        Offset = 0;
+        ReadClosed = false;
+        WriteClosed = false;
+    }
+};
+
+
+struct PipeMetas {
+    std::shared_ptr<FileMetadata> Read;
+    std::shared_ptr<FileMetadata> Write;
+
+    PipeMetas(std::shared_ptr<FileMetadata> readMeta, std::shared_ptr<FileMetadata> writeMeta)
+    : Read(readMeta), Write(writeMeta) {}
+};
+
+struct PipeEnd {
+    PipeBuffer* Buffer;
+    enum EndType{
+        READ,
+        WRITE,
+    } End;
+
+    PipeEnd(PipeBuffer* buffer, PipeEnd::EndType endType)
+    : Buffer(buffer), End(endType) {}
+};
+
+struct NamedPipeBuffer {
+    std::weak_ptr<FileMetadata> meta;
+    std::string name;
+    PipeBuffer *pipe;
 };
 
 struct PipeDriver final : StorageDeviceDriver {
-    void close(FileMetadata* meta) final {
-        if (!meta) return;
-        auto* pipe = static_cast<PipeBuffer*>(meta->driver_data());
-        FreePipeBuffers.push_back(pipe);
-    }
-
+    void close(FileMetadata* meta) final;
     auto open(std::string_view path) -> std::shared_ptr<FileMetadata> final;
 
-    ssz read(FileMetadata* file, usz, usz byteCount, void* buffer) final {
-        // Find which pipe by using byte offset.
-        if (!file) return -1;
-        auto* pipe = static_cast<PipeBuffer*>(file->driver_data());
-        if (!pipe) return -1;
-
-        // TODO: Support "wait until there is something to read".
-        if (pipe->Offset == 0) {
-            return -1;
-        }
-
-        // TODO: Read in a loop to fill buffers larger than what is currently written.
-        if (byteCount > pipe->Offset) {
-            byteCount = pipe->Offset;
-        }
-
-        memcpy(buffer, pipe->Data + pipe->Offset, byteCount);
-        return ssz(byteCount);
-    };
-
+    ssz read(FileMetadata* meta, usz, usz byteCount, void* buffer) final;
     ssz read_raw(usz, usz, void*) final { return -1; };
+    ssz write(FileMetadata* meta, usz, usz byteCount, void* buffer) final;
 
-    ssz write(FileMetadata* file, usz, usz byteCount, void* buffer) final {
-        // Find which pipe by using byte offset. There is no filesystem
-        // backing, so we can just use that as an index/key to find
-        // which buffer to write to.
-        if (!file) return -1;
-        auto* pipe = static_cast<PipeBuffer*>(file->driver_data());
-        if (!pipe) return -1;
-        if (pipe->Offset + byteCount > PIPE_BUFSZ) {
-            // TODO: Support "wait if full". For now, just truncate write.
-            byteCount = PIPE_BUFSZ - pipe->Offset;
-        }
-
-        memcpy(pipe->Data + pipe->Offset, buffer, byteCount);
-        return ssz(byteCount);
-    }
-
-    /// Return a byte offset that can be used later to find a unique
-    /// buffer, allocated by this function.
-    auto lay_pipe() -> std::shared_ptr<FileMetadata> {
-        // TODO: Pick suitable file name for file metadata.
-        return open("");
-    }
+    PipeMetas lay_pipe();
 
 private:
+    /// Stores pipe buffers along with names for mock-filesystem functionality.
+    std::vector<NamedPipeBuffer> PipeBuffers;
     std::vector<PipeBuffer*> FreePipeBuffers;
 };
 

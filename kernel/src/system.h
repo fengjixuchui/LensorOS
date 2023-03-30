@@ -38,24 +38,34 @@
  *
  * System Device Number:
  * |-- 0: Reserved
- * `-- 1: Storage Device -- StorageDeviceDriver at Data1
- *     |-- 0: AHCI Controller
- *     |   `-- Data2: PCI Device Header Address
- *     |-- 1: AHCI Port
- *     |   `-- Data2: AHCI Controller System Device Ptr
- *     `-- 10: GPT Partition
- *         |-- Data2: Partition Data (Sector offset, total size)
- *         `-- Data4: System Device Ptr (To storage device this part. resides on)
+ * |-- 1: Storage Device -- StorageDeviceDriver at Data1
+ * |   |-- 0: AHCI Controller
+ * |   |-- 1: AHCI Port
+ * |   `-- 10: GPT Partition
+ * |
+ * |-- 2: Network Device -- TODO: NetworkDeviceDriver at Data1 or whatever
+ * |   `-- 0: E1000 Network Controller
+ * TODO:
+ * `-- 3: Timer -- TimerInterface at Data1
+ *     |-- 0: Monotonic -- PIT :: has tick() and get() :: time_t
+ *     |-- 1: Query -- RTC :: has get() :: struct tm
+ *     `-- 2: Wait -- HPET :: do something at end of elapsed time, or something
  */
 
 /* STORAGE DEVICE MAJOR NUMBERS */
-constexpr u64 SYSDEV_MAJOR_STORAGE = 1;
+inline constexpr u64 SYSDEV_MAJOR_STORAGE = 1;
 /* STORAGE DEVICE FLAGS */
-constexpr u64 SYSDEV_MAJOR_STORAGE_SEARCH = 0;
+inline constexpr u64 SYSDEV_MAJOR_STORAGE_SEARCH = 0;
 /* STORAGE DEVICE MINOR NUMBERS */
-constexpr u64 SYSDEV_MINOR_AHCI_CONTROLLER = 0;
-constexpr u64 SYSDEV_MINOR_AHCI_PORT       = 1;
-constexpr u64 SYSDEV_MINOR_GPT_PARTITION   = 10;
+inline constexpr u64 SYSDEV_MINOR_AHCI_CONTROLLER = 0;
+inline constexpr u64 SYSDEV_MINOR_AHCI_PORT       = 1;
+inline constexpr u64 SYSDEV_MINOR_GPT_PARTITION   = 10;
+/* NETWORK DEVICE MAJOR NUMBERS */
+inline constexpr u64 SYSDEV_MAJOR_NETWORK = 2;
+/* NETWORK DEVICE FLAGS */
+/* NETWORK DEVICE MINOR NUMBERS */
+inline constexpr u64 SYSDEV_MINOR_E1000 = 0;
+
 
 struct System;
 
@@ -73,12 +83,6 @@ public:
     SystemDevice(u64 major, u64 minor, std::shared_ptr<StorageDeviceDriver> driver)
         : Major(major), Minor(minor), Driver(std::move(driver)) {}
 
-    SystemDevice(u64 major, u64 minor
-                 , std::shared_ptr<StorageDeviceDriver> driver
-                 , void* data2)
-        : Major(major), Minor(minor)
-        , Driver(std::move(driver)), Data2(data2) {}
-
     void set_flag(u64 bitNumber, bool state) {
         Flags &= ~(1 << bitNumber);
         if (state)
@@ -93,16 +97,12 @@ public:
     u64 major() { return Major; }
     u64 minor() { return Minor; }
     auto driver() -> std::shared_ptr<StorageDeviceDriver> { return Driver; }
-    void* data2() { return Data2; }
 
 private:
     u64 Flags { 0 };
     u64 Major { 0 };
     u64 Minor { 0 };
     std::shared_ptr<StorageDeviceDriver> Driver { nullptr };
-
-    /// AHCI Controller: PCI Device Header
-    void* Data2 { nullptr };
 };
 
 struct System {
@@ -153,7 +153,6 @@ struct System {
                            , dev->flags());
 
                 if (auto d1 = dev->driver()) std::print("\n    Driver: {}", (void*) d1.get());
-                if (auto d2 = dev->data2()) std::print("\n    Data2:  {}", d2);
 
                 std::print("\n");
             }

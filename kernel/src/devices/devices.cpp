@@ -21,9 +21,9 @@
 #include <devices/devices.h>
 #include <pci.h>
 
-Devices::AHCIController::AHCIController(PCI::PCIHeader0& hdr)
-    : SystemDevice(SYSDEV_MAJOR_STORAGE, SYSDEV_MINOR_AHCI_CONTROLLER)
-    , Header(hdr) {
+Devices::AHCIController::AHCIController(PCI::PCIHeader0* hdr)
+    : SystemDevice(SYSDEV_MAJOR_STORAGE, SYSDEV_MINOR_AHCI_CONTROLLER) {
+    Header = hdr;
     set_flag(SYSDEV_MAJOR_STORAGE_SEARCH, true);
 }
 
@@ -51,3 +51,8 @@ Devices::GPTPartition::GPTPartition(std::shared_ptr<AHCIPort> port, GPT::Partiti
     , Partition(part) {
     set_flag(SYSDEV_MAJOR_STORAGE_SEARCH, true);
 }
+
+Devices::E1000Device::E1000Device(PCI::PCIHeader0* header)
+    : SystemDevice(SYSDEV_MAJOR_NETWORK, SYSDEV_MINOR_E1000)
+    , Header(header) {}
+

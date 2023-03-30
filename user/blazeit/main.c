@@ -17,8 +17,9 @@
  * along with LensorOS. If not, see <https://www.gnu.org/licenses/>.
  */
 
-int main(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
+#include <stdio.h>
+
+int main(void) {
+  puts("  >== blaze it, mafk ==>");
   return 420;
 }

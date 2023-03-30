@@ -28,10 +28,12 @@
 #include "stdlib.h"
 #include "string.h"
 #include "unistd.h"
+#include "sys/syscalls.h"
 
 #include <algorithm>
 #include <atomic>
 #include <extensions>
+#include <format>
 #include <mutex>
 #include <new>
 #include <string>
@@ -199,11 +201,14 @@ int _IO_File::getpos(fpos_t& pos) const {
 }
 
 int _IO_File::seek(_IO_off_t offset, int whence) {
-    /// TODO: Implement.
-    /// TODO: This has to undo unget()s.
-    (void)offset;
-    (void)whence;
-    return -1;
+    __f_has_ungotten = false;
+    __f_eof = false;
+
+    /// Flush the stream.
+    if (!flush()) return -1;
+
+    // TODO: seek syscall
+    return (int)syscall(SYS_seek, __fd, offset, whence);
 }
 
 int _IO_File::setpos(const fpos_t& pos) {
@@ -333,10 +338,12 @@ size_t _IO_File::copy_from_read_buffer(char* __restrict__ buf, size_t size) {
     memcpy(buf, __rdbuf.__buf, to_copy);
 
     /// If we've copied all the data, reset the buffer.
-    if (stream_rem == to_copy) { __rdbuf.__start = __rdbuf.__offs = 0; }
-
+    if (stream_rem == to_copy) {
+        __rdbuf.__start = 0;
+        __rdbuf.__offs = 0;
+    }
     /// Otherwise, move the start pointer.
-    else { __rdbuf.__start += to_copy; }
+    else __rdbuf.__start += to_copy;
 
     /// Return the number of bytes copied.
     return to_copy;
@@ -685,13 +692,94 @@ int sscanf(const char* __restrict__ str, const char* __restrict__ format, ...) {
     return ret;
 }
 
+constexpr static char __digit_from_value(auto value) {
+    if (value < 10) return (char)('0' + (unsigned char)value);
+    if (value < 16) return (char)('a' + (unsigned char)value);
+    return '_';
+}
+
 int vfprintf(FILE* __restrict__ stream, const char* __restrict__ format, va_list args) {
-    /// FIXME: Stub.
-    (void)stream;
-    (void)format;
-    (void)args;
-    _LIBC_STUB();
-    return -1;
+    for (const char *fmt = format; *fmt; ++fmt) {
+        if (*fmt == '%') {
+            ++fmt;
+            switch (*fmt) {
+
+            // TODO: Support more format specifiers
+
+            case 'p': {
+                void *addr = va_arg(args, void *);
+                std::print("{}", addr);
+            } continue;
+
+            case 's': {
+                const char *str = va_arg(args, const char *);
+                fputs(str, stream);
+            } continue;
+
+            case 'c': {
+                int c = va_arg(args, int);
+                fputc(c, stream);
+            } continue;
+
+            case 'u': {
+                unsigned int val = va_arg(args, unsigned int);
+
+                // TODO: Abstract + parameterise number printing
+                constexpr const size_t radix = 10;
+                static_assert(radix != 0, "Can not print zero-base numbers");
+
+                constexpr const size_t max_digits = 32;
+                static_assert(max_digits != 0, "Can not print into zero-length buffer");
+                char digits[max_digits] = {0};
+
+                size_t i = max_digits;
+                for (size_t tmp_val = val; tmp_val && i; tmp_val /= radix, --i)
+                    digits[i - 1] = __digit_from_value(tmp_val % radix);
+
+                if (i == max_digits) digits[--i] = '0';
+
+                for (const char *it = &digits[i]; it < &digits[0] + max_digits && *it; ++it)
+                    fputc(*it, stream);
+
+            } continue;
+
+            case 'i':
+            case 'd': {
+                int val = va_arg(args, int);
+                bool negative = val < 0;
+
+                // TODO: Abstract + parameterise number printing
+                constexpr const size_t radix = 10;
+                static_assert(radix != 0, "Can not print zero-base numbers");
+
+                constexpr const size_t max_digits = 32;
+                static_assert(max_digits != 0, "Can not print into zero-length buffer");
+                char digits[max_digits] = {0};
+
+                size_t i = max_digits;
+                for (size_t tmp_val = negative ? -val : val; tmp_val && i; tmp_val /= radix, --i)
+                    digits[i - 1] = __digit_from_value(tmp_val % radix);
+
+                if (i == max_digits) digits[--i] = '0';
+
+                if (negative) fputc('-', stream);
+                for (const char *it = &digits[i]; it < &digits[0] + max_digits && *it; ++it)
+                    fputc(*it, stream);
+
+            } continue;
+
+            case '\0':
+                fputc('%', stream);
+                return 0;
+
+            default:
+                fputc('%', stream);
+                break;
+            }
+        }
+        fputc(*fmt, stream);
+    }
+    return 0;
 }
 
 int vfscanf(FILE* __restrict__ stream, const char* __restrict__ format, va_list args) {
@@ -722,12 +810,86 @@ int vsnprintf(char* __restrict__ str, size_t size, const char* __restrict__ form
 }
 
 int vsprintf(char* __restrict__ str, const char* __restrict__ format, va_list args) {
-    /// FIXME: Stub.
-    (void)str;
-    (void)format;
-    (void)args;
-    _LIBC_STUB();
-    return -1;
+    for (const char *fmt = format; *fmt; ++fmt) {
+        if (*fmt == '%') {
+            ++fmt;
+            switch (*fmt) {
+
+            // TODO: Support more format specifiers
+
+            case 's': {
+                const char *str_val = va_arg(args, const char *);
+                while (*str_val) {
+                    *str++ = *str_val++;
+                }
+                *str = '\0';
+            } continue;
+
+            case 'c': {
+                int c = va_arg(args, int);
+                *str++ = (char)c;
+            } continue;
+
+            case 'u': {
+                unsigned int val = va_arg(args, unsigned int);
+
+                // TODO: Abstract + parameterise number printing
+                constexpr const size_t radix = 10;
+                static_assert(radix != 0, "Can not print zero-base numbers");
+
+                constexpr const size_t max_digits = 32;
+                static_assert(max_digits != 0, "Can not print into zero-length buffer");
+                char digits[max_digits] = {0};
+
+                size_t i = max_digits;
+                for (size_t tmp_val = val; tmp_val && i; tmp_val /= radix, --i)
+                    digits[i - 1] = __digit_from_value(tmp_val % radix);
+
+                if (i == max_digits) digits[--i] = '0';
+
+                for (const char *it = &digits[i]; it < &digits[0] + max_digits && *it; ++it)
+                    *str++ = *it;
+
+            } continue;
+
+            case 'i':
+            case 'd': {
+                int val = va_arg(args, int);
+                bool negative = val < 0;
+
+                // TODO: Abstract + parameterise number printing
+                constexpr const size_t radix = 10;
+                static_assert(radix != 0, "Can not print zero-base numbers");
+
+                constexpr const size_t max_digits = 32;
+                static_assert(max_digits != 0, "Can not print into zero-length buffer");
+                char digits[max_digits] = {0};
+
+                size_t i = max_digits;
+                for (size_t tmp_val = negative ? -val : val; tmp_val && i; tmp_val /= radix, --i)
+                    digits[i - 1] = __digit_from_value(tmp_val % radix);
+
+                if (i == max_digits) digits[--i] = '0';
+
+                if (negative) *str++ = '-';
+                for (const char *it = &digits[i]; it < &digits[0] + max_digits && *it; ++it)
+                    *str++ = *it;
+
+            } continue;
+
+            case '\0':
+                *str++ = '%';
+                *str = '\0';
+                return 0;
+
+            default:
+                *str++ = '%';
+                break;
+            }
+        }
+        *str++ = *fmt;
+    }
+    return 0;
 }
 
 int vsscanf(const char* __restrict__ str, const char* __restrict__ format, va_list args) {
@@ -839,7 +1001,7 @@ int fseek(FILE* stream, long offset, int whence) {
     LOCK(stream);
 
     /// Seek to the position.
-    return stream->seek(offset, whence) ? 0 : -1;
+    return stream->seek(offset, whence) == 0 ? 0 : -1;
 }
 
 int fsetpos(FILE* stream, const fpos_t* pos) {

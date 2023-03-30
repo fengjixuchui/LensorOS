@@ -17,17 +17,20 @@
  * along with LensorOS. If not, see <https://www.gnu.org/licenses
  */
 
-#include <format>
+#include <scheduler.h>
 
+#include <format>
 #include <integers.h>
 #include <interrupts/idt.h>
 #include <interrupts/interrupts.h>
 #include <linked_list.h>
 #include <memory.h>
+#include <memory/paging.h>
+#include <memory/physical_memory_manager.h>
 #include <memory/virtual_memory_manager.h>
 #include <pit.h>
-#include <scheduler.h>
 #include <vfs_forward.h>
+#include <system.h>
 
 /// External symbol definitions for `scheduler.asm`
 void(*scheduler_switch_process)(CPUState*)
@@ -35,17 +38,68 @@ void(*scheduler_switch_process)(CPUState*)
 
 void(*timer_tick)();
 
+void Process::destroy(int status) {
+    //std::print("Destroying process {}\n", ProcessID);
+
+    // If process being destroyed is the init process, set the SYSTEM
+    // init process to NULL so that the kernel will know it has exited.
+    // This prevents the keyboard interrupt from writing to stdin, for
+    // example.
+    if (this == SYSTEM->init_process()) {
+        std::print("[SCHED]: Destroying init process");
+        SYSTEM->set_init(NULL);
+    }
+
+    // Add zombie entry to parent process.
+    // FIXME: Do we need to copy all of our zombies over as well?
+    Process *parent = Scheduler::process(ParentProcess);
+    if (parent) {
+        ZombieState zombie{ProcessID, status};
+        //std::print("[SCHED]: Adding zombie ({}, {}) to process {}\n", zombie.PID, zombie.ReturnStatus, ParentProcess);
+        parent->Zombies.push_back(zombie);
+    }
+
+    // Run all of the programs in the WaitingList.
+    for(pid_t pid : WaitingList) {
+        Process *waitingProcess = Scheduler::process(pid);
+        if (waitingProcess) {
+            // Set return value of CPU state that will be restored when process is run.
+            //std::print("[SCHED]: Setting return value of waiting PID {} to {}\n", pid, status);
+            waitingProcess->CPU.RAX = status;
+            waitingProcess->State = Process::ProcessState::RUNNING;
+        }
+    }
+    // Free memory regions. This includes mmap()ed memory as
+    // well as loaded program regions, the stack, etc.
+    Memories.for_each([](SinglyLinkedListNode<Memory::Region>* it){
+        Memory::free_pages(it->value().paddr, it->value().pages);
+    });
+    // Clear memories list.
+    while (Memories.remove(0));
+
+    // Close open files.
+    // NOTE: There *should* be none; libc should close all open files on destruction.
+    for (const auto& [procfd, fd] : FileDescriptors.pairs()) {
+        std::print("Process {} leaked {} ProcFD, closing...\n", ProcessID, procfd);
+        SYSTEM->virtual_filesystem().close(this, procfd);
+    }
+
+    // FIXME: Abstract x86_64 specific stuff!!
+    Scheduler::PageMapsToFree.push_back(CR3);
+}
+
 namespace Scheduler {
     // Not the best, but wouldn't be a problem unless ridiculous uptime.
     pid_t the_pid { 0 };
     pid_t request_pid() {
-        return the_pid++;
+        return ++the_pid;
     }
 
     Process StartupProcess;
 
     SinglyLinkedList<Process*>* ProcessQueue { nullptr };
     SinglyLinkedListNode<Process*>* CurrentProcess { nullptr };
+    std::vector<Memory::PageTable*> PageMapsToFree;
 
     void print_debug() {
         std::print("[SCHED]: Debug information:\n"
@@ -108,31 +162,45 @@ namespace Scheduler {
         std::print("\n");
     }
 
+    Process* process(pid_t pid) {
+        for (SinglyLinkedListNode<Process*>* it = Scheduler::ProcessQueue->head(); it; it = it->next()) {
+            if (it->value()->ProcessID == pid) {
+                return it->value();
+            }
+        }
+        return nullptr;
+    }
+
     Process* last_process() {
         return ProcessQueue->tail()->value();
     }
 
-    void add_process(Process* process) {
-        process->ProcessID = request_pid();
+    pid_t add_process(Process* process) {
+        pid_t pid = request_pid();
+        process->ProcessID = pid;
         ProcessQueue->add_end(process);
-        std::print("[SCHED]: Added process.\n");
-        print_debug();
+        //std::print("[SCHED]: Added process.\n");
+        //print_debug();
+        return pid;
     }
 
-    bool remove_process(pid_t pid) {
+    bool remove_process(pid_t pid, int status) {
         Process* processToRemove = nullptr;
         int processToRemoveIndex = 0;
-        ProcessQueue->for_each([pid, &processToRemove, &processToRemoveIndex](auto* it) {
+        for (SinglyLinkedListNode<Process*>* it = ProcessQueue->head(); it; it = it->next()) {
             Process* process = it->value();
             if (process->ProcessID == pid) {
                 processToRemove = process;
-            } else if (processToRemove == nullptr) {
-                processToRemoveIndex += 1;
+                break;
             }
-        });
+            processToRemoveIndex += 1;
+        }
         if (processToRemove) {
             ProcessQueue->remove(processToRemoveIndex);
-            processToRemove->destroy();
+            // Ensure scheduler doesn't **somehow** run this process after it's destroyed.
+            processToRemove->State = Process::SLEEPING;
+            processToRemove->destroy(status);
+            delete processToRemove;
             return true;
         }
         return false;
@@ -145,13 +213,15 @@ namespace Scheduler {
         scheduler_switch_process = scheduler_switch;
         // Setup currently executing code as the start process.
         StartupProcess.CR3 = Memory::active_page_map();
+        StartupProcess.State = Process::RUNNING;
+        StartupProcess.ProcessID = 0;
         // Create the process queue and add the startup process to it.
         ProcessQueue = new SinglyLinkedList<Process*>;
         if (ProcessQueue == nullptr) {
-            std::print("\033[31mScheduler failed to initialize:\033[0m Could not create process list.\n");
+            std::print("\033[31mScheduler failed to initialize:\033[0m Could not allocate process list.\n");
             return false;
         }
-        add_process(&StartupProcess);
+        ProcessQueue->add(&StartupProcess);
         CurrentProcess = ProcessQueue->head();
         // Install IRQ0 handler found in `scheduler.asm` (over-write default system timer handler).
         gIDT.install_handler((u64)irq0_handler, PIC_IRQ0);
@@ -202,15 +272,7 @@ namespace Scheduler {
         return NextProcess;
     }
 
-    /// Called from `irq0_handler` in `scheduler.asm`
-    /// A stupid simple round-robin process switcher.
-    void switch_process(CPUState* cpu) {
-        memcpy(&CurrentProcess->value()->CPU, cpu, sizeof(CPUState));
-
-        // TODO: Check all processes that called `wait(ms)`, and run/
-        // unstop them if the timestamp is greater than the calculated
-        // one.
-
+    void switch_process_impl(CPUState *cpu) {
         // Handle single viable process or end of queue.
         if (CurrentProcess->next() == nullptr) {
             // If there is only one viable process,
@@ -224,8 +286,20 @@ namespace Scheduler {
                                                  , IncludeGivenProcess::Yes);
         }
         else CurrentProcess = next_viable_process(CurrentProcess);
+
         // Update state of CPU that will be restored.
         memcpy(cpu, &CurrentProcess->value()->CPU, sizeof(CPUState));
+
+        if (SYSTEM->cpu().fxsr_enabled() && CurrentProcess->value()->CPUExtraSet) {
+            // Get 512-byte aligned address.
+            usz i = (512 - ((usz)&CurrentProcess->value()->CPUExtra[0] % 512)) % 512;
+            //std::print("Restoring FPU state using fxrstor64 at {}...\n", addr);
+            asm volatile("fxrstor64 %0"
+                         :: "m"(CurrentProcess->value()->CPUExtra[i])
+                         );
+            //std::print("Restored FPU state using fxrstor64 at {}...\n", addr);
+        }
+
         // Use new process' page map.
         Memory::flush_page_map(CurrentProcess->value()->CR3);
         // Update ES and DS to SS.
@@ -236,9 +310,160 @@ namespace Scheduler {
             :: "r"(cpu->Frame.ss)
             : "rax"
             );
+        // Eventually, FS and GS will be used for TLS, or Thread Local
+        // Storage.
         // Update FS and GS to SS.
-        // Technically we could use these for whatever.
         cpu->FS = cpu->Frame.ss;
         cpu->GS = cpu->Frame.ss;
+    }
+
+    /// Called from `irq0_handler` in `scheduler.asm`
+    /// A stupid simple round-robin process switcher.
+    void switch_process(CPUState* cpu) {
+        memcpy(&CurrentProcess->value()->CPU, cpu, sizeof(CPUState));
+
+        // TODO: Save extra context depending on system features
+        // (i.e. xmm registers with fxsave/fxrestore)
+        // I will be curious as to where we store the buffers for these;
+        // a member in Process seems a little platform-dependant.
+        if (SYSTEM->cpu().fxsr_enabled()) {
+            // Get 512-byte aligned address.
+            usz i = (512 - ((usz)&CurrentProcess->value()->CPUExtra[0] % 512)) % 512;
+            //std::print("Saving FPU state using fxsave64 at {}...\n", addr);
+            asm volatile("fxsave64 %0\n\t"
+                         :: "m"(CurrentProcess->value()->CPUExtra[i])
+                         );
+            CurrentProcess->value()->CPUExtraSet = true;
+            //std::print("Saved fpu state using fxsave at {}...\n", addr);
+        }
+
+        // TODO: Check all processes that called `wait(ms)`, and run/
+        // unstop them if the timestamp is greater than the calculated
+        // one.
+
+        switch_process_impl(cpu);
+    }
+
+    // Defined in `scheduler.asm`
+    extern "C" [[noreturn]] void yield_asm(CPUState*);
+
+    void yield() {
+        CPUState newstate;
+        switch_process_impl(&newstate);
+        // iretq to the new process, bb.
+        yield_asm(&newstate);
+    }
+}
+
+pid_t CopyUserspaceProcess(Process* original) {
+    // Allocate process before cloning page table in case it causes
+    // heap to expand.
+    Process* newProcess = new Process;
+    newProcess->State = Process::ProcessState::SLEEPING;
+    Scheduler::add_process(newProcess);
+    newProcess->ParentProcess = original->ProcessID;
+
+    // Copy current page table (fork)
+    auto* newPageTable = Memory::clone_page_map(original->CR3);
+    if (newPageTable == nullptr) {
+        std::print("Failed to clone current page map for new process page map.\n");
+        Scheduler::remove_process(newProcess->ProcessID, -1);
+        return -1;
+    }
+    newProcess->CR3 = newPageTable;
+    // Map new page table in itself.
+    Memory::map(newPageTable, newPageTable, newPageTable
+                , (u64)Memory::PageTableFlag::Present
+                | (u64)Memory::PageTableFlag::ReadWrite
+                );
+
+    //std::print("[SCHED]: Allocated new process {} at {}\n", newProcess->ProcessID, (void*)newProcess);
+
+    // Copy each memory region's contents into newly allocated memory.
+    for (SinglyLinkedListNode<Memory::Region>* it = original->Memories.head(); it; it = it->next()) {
+        Memory::Region& memory = it->value();
+        Memory::Region newMemory{memory};
+        usz newMemoryPages = usz(Memory::request_pages(memory.pages));
+        if (!newMemoryPages) {
+            // Out of memory.
+            panic("OOM while copying process' regions...");
+            while (true) {
+                asm volatile ("hlt");
+            }
+        }
+        newMemory.paddr = (void*)newMemoryPages;
+
+        /*
+        std::print("[SCHED]: Copying memory region A to B\n"
+                   "  A: vaddr={}  paddr={}  pages={}\n"
+                   "  B: vaddr={}  paddr={}  pages={}\n"
+                   , memory.vaddr, memory.paddr, memory.pages
+                   , newMemory.vaddr, newMemory.paddr, newMemory.pages
+                   );
+        */
+
+        // Copy memory contents (physical addresses because kernel has identity mapping).
+        memcpy(newMemory.paddr, memory.paddr, memory.length);
+
+        // Map virtual addresses to new physical addresses.
+        Memory::map_pages(newPageTable, newMemory.vaddr, newMemory.paddr
+                          , (u64)Memory::PageTableFlag::Present
+                          | (u64)Memory::PageTableFlag::ReadWrite
+                          | (u64)Memory::PageTableFlag::UserSuper
+                          , newMemory.pages
+                          , Memory::ShowDebug::No
+                          );
+
+        // Add new memory region to new process.
+        newProcess->add_memory_region(newMemory);
+    }
+
+    // Copy file descriptors.
+    // FIXME: We need a better way of doing this.
+    // ProcFDs need to remain equal, while the values that they index
+    // in the sparse_vector need to be replaced with a new shared ptr.
+    std::vector<ProcFD> garbage_fds_to_erase;
+    for (const auto& [procfd, sysfd] : original->FileDescriptors.pairs()) {
+        // In order to account for holes in the file descriptors vector
+        // we are copying from, we need to push garbage values until we
+        // reach the expected procfd...
+        while (newProcess->FileDescriptors.allocated_size() < (usz)procfd) {
+            auto [fd, success] = newProcess->FileDescriptors.push_back(sysfd);
+            if (!success) break;
+            std::print("Pushing garbage: {}...\n", fd);
+            garbage_fds_to_erase.push_back(fd);
+        }
+
+        auto f = SYSTEM->virtual_filesystem().file(sysfd);
+        //std::print("[FORK]: Copying \"{}\" (ProcFD {}) to process {}\n", f->name(), procfd, newProcess->ProcessID);
+        SYSTEM->virtual_filesystem().add_file(std::move(f), newProcess);
+    }
+
+    for (auto fd : garbage_fds_to_erase) {
+        std::print("Clearing garbage at {}...\n", fd);
+        newProcess->FileDescriptors.erase(fd);
+    }
+
+    // Copy PWD
+    newProcess->ExecutablePath = original->ExecutablePath;
+    newProcess->WorkingDirectory = original->WorkingDirectory;
+
+    newProcess->CPU = original->CPU;
+    newProcess->next_region_vaddr = original->next_region_vaddr;
+    // Set child return value for `fork()`.
+    newProcess->CPU.RAX = 0;
+
+    newProcess->State = Process::ProcessState::RUNNING;
+
+    return newProcess->ProcessID;
+}
+
+void Scheduler::map_pages_in_all_processes(void* virtualAddress, void* physicalAddress, u64 mappingFlags, usz pages, Memory::ShowDebug d) {
+    for (SinglyLinkedListNode<Process*>* it = ProcessQueue->head(); it; it = it->next()) {
+        Memory::map_pages(it->value()->CR3
+                          , virtualAddress, physicalAddress
+                          , mappingFlags
+                          , pages
+                          , d);
     }
 }

@@ -29,8 +29,8 @@
 namespace Devices {
 
 struct AHCIController : SystemDevice {
-    PCI::PCIHeader0 Header;
-    AHCIController(PCI::PCIHeader0& hdr);
+    PCI::PCIHeader0* Header;
+    AHCIController(PCI::PCIHeader0* hdr);
 };
 
 struct AHCIPort : SystemDevice {
@@ -46,6 +46,11 @@ struct GPTPartition : SystemDevice {
     GPT::PartitionEntry Partition;
 
     GPTPartition(std::shared_ptr<AHCIPort> port, GPT::PartitionEntry& part);
+};
+
+struct E1000Device : SystemDevice {
+    PCI::PCIHeader0* Header;
+    E1000Device(PCI::PCIHeader0* header);
 };
 
 }

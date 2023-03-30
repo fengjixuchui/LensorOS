@@ -17,12 +17,12 @@
  * along with LensorOS. If not, see <https://www.gnu.org/licenses
  */
 
-#include "devices/devices.h"
+#include <pci.h>
 
 #include <acpi.h>
+#include <devices/devices.h>
 #include <memory/paging.h>
 #include <memory/virtual_memory_manager.h>
-#include <pci.h>
 #include <system.h>
 
 // Uncomment the following directive for extra debug information output.
@@ -35,6 +35,10 @@
 #endif
 
 namespace PCI {
+    BarType get_bar_type(u32 BAR) {
+        return BAR & 1 ? BarType::IO : BarType::Memory;
+    }
+
     void print_device_header(PCIDeviceHeader* pci) {
         if (pci == nullptr)
             return;
@@ -95,16 +99,28 @@ namespace PCI {
 
         // Class 0x01 = Mass Storage Controller
         if (pciDevHdr->Class == 0x01) {
-            // Class 0x06 = Serial ATA
+            // Subclass 0x06 = Serial ATA
             if (pciDevHdr->Subclass == 0x06) {
                 // ProgIF 0x01 = AHCI 1.0 Device
                 if (pciDevHdr->ProgIF == 0x01) {
-                    SYSTEM->create_device<Devices::AHCIController>(*reinterpret_cast<PCIHeader0*>(pciDevHdr));
+                    std::print("[PCI]: Found AHCI 1.0 SATA Controller at {}\n", (void*)pciDevHdr);
+                    SYSTEM->create_device<Devices::AHCIController>(reinterpret_cast<PCIHeader0*>(pciDevHdr));
+                }
+            }
+        }
+        // Class 0x02 == Network Controller
+        else if (pciDevHdr->Class == 0x02) {
+            // Subclass 0x00 == Ethernet Controller
+            if (pciDevHdr->Subclass == 0x00) {
+                // Device ID 100e == E1000 Network Card
+                if (pciDevHdr->DeviceID == 0x100e) {
+                    std::print("[PCI]: Found e1000 network controller at {}\n", (void*)pciDevHdr);
+                    SYSTEM->create_device<Devices::E1000Device>(reinterpret_cast<PCIHeader0*>(pciDevHdr));
                 }
             }
         }
     }
-    
+
     void enumerate_device(u64 busAddress, u64 deviceNumber) {
         u64 offset = deviceNumber << 15;
         u64 deviceAddress = busAddress + offset;
@@ -125,7 +141,7 @@ namespace PCI {
         for (u64 function = 0; function < 8; ++function)
             enumerate_function(deviceAddress, function);
     }
-    
+
     void enumerate_bus(u64 baseAddress, u64 busNumber) {
         u64 offset = busNumber << 20;
         u64 busAddress = baseAddress + offset;
@@ -138,7 +154,7 @@ namespace PCI {
         for (u64 device = 0; device < 32; ++device)
             enumerate_device(busAddress, device);
     }
-    
+
     void enumerate_pci(ACPI::MCFGHeader* mcfg) {
         std::print("[PCI]: Discovering devices...\n");
         int entries = ((mcfg->Length) - sizeof(ACPI::MCFGHeader)) / sizeof(ACPI::DeviceConfig);

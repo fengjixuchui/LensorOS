@@ -47,8 +47,8 @@ struct __vector {
     using difference_type = ptrdiff_t;
     using iterator = _T*;
     using const_iterator = const _T*;
-    using reverse_iterator = _ReverseIterator<iterator>;
-    using const_reverse_iterator = _ReverseIterator<const_iterator>;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
 private:
     value_type* __ptr{};
@@ -59,7 +59,7 @@ public:
     /// =======================================================================
     ///  Constructors.
     /// =======================================================================
-    /// Contstruct an empty vector.
+    /// Construct an empty vector.
     __vector() noexcept = default;
 
     /// Construct a __vector with a given size.
@@ -124,16 +124,16 @@ public:
     iterator end() noexcept { return __ptr + __sz; }
     const_iterator end() const noexcept { return __ptr + __sz; }
 
-    reverse_iterator rbegin() noexcept { return reverse_iterator(end() - 1); }
-    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end() - 1); }
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
 
-    reverse_iterator rend() noexcept { return reverse_iterator(begin() - 1); }
-    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin() - 1); }
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
 
     const_iterator cbegin() const noexcept { return __ptr; }
     const_iterator cend() const noexcept { return __ptr + __sz; }
-    const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end() - 1); }
-    const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin() - 1); }
+    const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
 
     /// =======================================================================
     ///  Size and capacity.
@@ -260,6 +260,32 @@ public:
 
     iterator erase(const_iterator __pos) { return erase(__pos, __pos + 1); }
 };
+
+
+template
+<typename _ElementType,
+ typename __index_type = size_t,
+ class _ComparedType
+ >
+constexpr typename __vector<_ElementType, __index_type>::size_type
+erase(__vector<_ElementType, __index_type>& __container, const _ComparedType& __value) {
+    size_t __size = __container.size();
+    __container.erase(remove(__container.begin(), __container.end(), __value), __container.end());
+    return __size - __container.size();
+}
+
+template
+<typename _ElementType,
+ typename __index_type = size_t,
+ class _Predicate
+ >
+constexpr typename __vector<_ElementType, __index_type>::size_type
+erase_if(__vector<_ElementType, __index_type>& __container, _Predicate __predicate) {
+    size_t __size = __container.size();
+    __container.erase(remove_if(__container.begin(), __container.end(), __predicate), __container.end());
+    return __size - __container.size();
+}
+
 
 template <typename _T>
 using vector = __vector<_T, size_t>;

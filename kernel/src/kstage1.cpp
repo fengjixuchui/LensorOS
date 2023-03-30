@@ -25,10 +25,12 @@
 #include <cpu.h>
 #include <cpuid.h>
 #include <devices/devices.h>
+#include <e1000.h>
 #include <efi_memory.h>
 #include <elf_loader.h>
 #include <gdt.h>
 #include <gpt.h>
+#include <gpt_partition_type_guids.h>
 #include <guid.h>
 #include <hpet.h>
 #include <interrupts/idt.h>
@@ -138,9 +140,12 @@ void kstage1(BootInfo* bInfo) {
      * x86 = The step is inherently x86-only (not implementation based).
      *
      * TODO:
+     * |-- Update the above list: it's close, but not exact anymore.
      * `-- A lot of hardware is just assumed to be there;
      *     figure out how to better probe for their existence,
      *     and gracefully handle the case that they aren't there.
+     *
+     *
      */
 
     // Disable interrupts while doing sensitive
@@ -179,20 +184,25 @@ void kstage1(BootInfo* bInfo) {
     // Setup dynamic memory allocation (`new`, `delete`).
     init_heap();
 
+    Memory::print_physmem();
+
     SYSTEM = new System();
 
-    // Initialize the Real Time Clock.
-    gRTC = RTC();
-    gRTC.set_periodic_int_enabled(true);
-    std::print("[kstage1]: \033[32mReal Time Clock (RTC) initialized\033[0m\n\033[1;33m"
-               "Now is {}:{}:{} on {}-{}-{}"
-               "\033[0m\n\n"
-           , gRTC.Time.hour
-           , gRTC.Time.minute
-           , gRTC.Time.second
-           , gRTC.Time.year
-           , gRTC.Time.month
-           , gRTC.Time.date);
+    {// Initialize the Real Time Clock.
+        gRTC = RTC();
+        gRTC.set_periodic_int_enabled(true);
+        std::print("[kstage1]: \033[32mReal Time Clock (RTC) initialized\033[0m\n\033[1;33m"
+                   "Now is {}:{}:{} on {}-{}-{}"
+                   "\033[0m\n\n"
+                   , gRTC.Time.hour
+                   , gRTC.Time.minute
+                   , gRTC.Time.second
+                   , gRTC.Time.year
+                   , gRTC.Time.month
+                   , gRTC.Time.date
+                   );
+    }
+
     // Create basic framebuffer renderer.
     std::print("[kstage1]: Setting up Graphics Output Protocol Renderer\n");
     gRend = BasicRenderer(bInfo->framebuffer, bInfo->font);
@@ -201,17 +211,18 @@ void kstage1(BootInfo* bInfo) {
     // Create basic text renderer for the keyboard.
     Keyboard::gText = Keyboard::BasicTextRenderer();
 
-    // Setup random number generators.
-    const RTCData& tm = gRTC.Time;
-    u64 someNumber =
-        tm.century + tm.year
-        + tm.month   + tm.date
-        + tm.weekday + tm.hour
-        + tm.minute  + tm.second;
-    gRandomLCG = LCG();
-    gRandomLCG.seed(someNumber);
-    gRandomLFSR = LFSR();
-    gRandomLFSR.seed(gRandomLCG.get(), gRandomLCG.get());
+    {// Setup random number generators.
+        const RTCData& tm = gRTC.Time;
+        u64 someNumber =
+            tm.century + tm.year
+            + tm.month   + tm.date
+            + tm.weekday + tm.hour
+            + tm.minute  + tm.second;
+        gRandomLCG = LCG();
+        gRandomLCG.seed(someNumber);
+        gRandomLFSR = LFSR();
+        gRandomLFSR.seed(gRandomLCG.get(), gRandomLCG.get());
+    }
 
     // Store feature set of CPU (capabilities).
     CPUDescription* SystemCPU = &SYSTEM->cpu();
@@ -362,29 +373,58 @@ void kstage1(BootInfo* bInfo) {
      * a single AHCI controller has multiple ports,
      * each one referring to its own device.
      */
-    for (auto& dev : SYSTEM->Devices){
+    for (usz i = 0; i < SYSTEM->Devices.size(); ++i) {
+        auto dev = SYSTEM->Devices[i];
         if (dev->major() == SYSDEV_MAJOR_STORAGE
             && dev->minor() == SYSDEV_MINOR_AHCI_CONTROLLER
             && dev->flag(SYSDEV_MAJOR_STORAGE_SEARCH) != 0)
         {
             std::print("[kstage1]: Probing AHCI Controller\n");
             auto controller = static_cast<Devices::AHCIController*>(dev.get());
-            auto* ABAR = reinterpret_cast<AHCI::HBAMemory*>(u64(controller->Header.BAR5));
+            auto* ABAR = reinterpret_cast<AHCI::HBAMemory*>(u64(controller->Header->BAR5));
 
             // TODO: Better MMIO!! It should be separate from regular virtual mappings, I think.
-            Memory::map(ABAR, ABAR
+
+            // Okay, this bug just showed me how stupid the current system is.
+            // VIRTUAL MEMORY MANAGER NEEDS ANOTHER LEVEL OF ABSTRACTION TO THE API
+            // I need to add something like `map_sized` that takes in a
+            // page table, virtual address, physical address, size of
+            // thing at those addresses, and then flags... THEN DO ALL THIS
+            // MULTI-PAGE CALCULATION IN THAT FUNCTION. Because having to deal
+            // with this everywhere there *might* be a misaligned
+            // pointer or a large struct is really hard to do correctly.
+
+            void* containing_page = (void*)((usz)ABAR - ((usz)ABAR % PAGE_SIZE));
+            Memory::map(containing_page, containing_page
                         , (u64)Memory::PageTableFlag::Present
-                        | (u64)Memory::PageTableFlag::ReadWrite
+                          | (u64)Memory::PageTableFlag::ReadWrite
                         );
+
+            // Handle case where ABAR spans two pages, in which case we have to map both.
+            void* next_page = (void*)((usz)containing_page + PAGE_SIZE);
+            if (((usz)ABAR + sizeof(AHCI::HBAMemory)) >= (u64)next_page)
+                Memory::map(next_page, next_page
+                            , (u64)Memory::PageTableFlag::Present
+                              | (u64)Memory::PageTableFlag::ReadWrite
+                            );
+
+            // Handle case where ABAR spans three pages, in which case we have to map a third.
+            next_page = (void*)((usz)next_page + PAGE_SIZE);
+            if (((usz)ABAR + sizeof(AHCI::HBAMemory)) >= (u64)next_page)
+                Memory::map(next_page, next_page
+                            , (u64)Memory::PageTableFlag::Present
+                              | (u64)Memory::PageTableFlag::ReadWrite
+                            );
+
             u32 ports = ABAR->PortsImplemented;
-            for (u64 i = 0; i < 32; ++i) {
+            for (uint i = 0; i < 32; ++i) {
                 if (ports & (1u << i)) {
                     AHCI::HBAPort* port = &ABAR->Ports[i];
                     AHCI::PortType type = get_port_type(port);
                     if (type != AHCI::PortType::None) {
                         SYSTEM->create_device<Devices::AHCIPort>(std::static_pointer_cast<Devices::AHCIController>(dev), type, i, port);
                     }
-                }
+                } else break;
             }
             // Don't search AHCI controller any further, already found all ports.
             dev->set_flag(SYSDEV_MAJOR_STORAGE_SEARCH, false);
@@ -395,7 +435,8 @@ void kstage1(BootInfo* bInfo) {
      * A storage device may be partitioned (i.e. GUID Partition Table).
      * These partitions are to be detected and new system devices created.
      */
-    for (auto& dev : SYSTEM->Devices) {
+    for (usz i = 0; i < SYSTEM->Devices.size(); ++i) {
+        auto dev = SYSTEM->Devices[i];
         if (dev->major() == SYSDEV_MAJOR_STORAGE
             && dev->minor() == SYSDEV_MINOR_AHCI_PORT
             && dev->flag(SYSDEV_MAJOR_STORAGE_SEARCH) != 0)
@@ -428,7 +469,7 @@ void kstage1(BootInfo* bInfo) {
                                "        Sector Offset: {}\n"
                                "        Sector Count: {}\n"
                                "        Attributes: {}\n",
-                               i, __s(part->Name),
+                               i, std::string_view((const char *)part->Name, sizeof(GPT::PartitionEntry) - 0x38),
                                GUID(part->TypeGUID),
                                GUID(part->UniqueGUID),
                                u64(part->StartLBA),
@@ -436,19 +477,19 @@ void kstage1(BootInfo* bInfo) {
                                u64(part->Attributes));
 
 
-                    // Don't touch partitions with ANY known GUIDs (for now).
-                    bool found = false;
-                    for (auto* knownGUID = &GPT::ReservedPartitionGUIDs[0]; *knownGUID != GPT::NullGUID; knownGUID++) {
-                        if (part->TypeGUID == *knownGUID) {
-                            found = true;
+                    // Don't touch partitions with known GUIDs, except for a select few.
+                    bool known = false;
+                    GUID known_guid;
+                    for (auto* reserved_guid = &GPT::ReservedPartitionGUIDs[0]; *reserved_guid != GPT::NullGUID; reserved_guid++) {
+                        if (part->TypeGUID == *reserved_guid) {
+                            known_guid = *reserved_guid;
+                            known = true;
                             break;
                         }
                     }
-
-                    if (!found) {
-                        SYSTEM->create_device<Devices::GPTPartition>(std::static_pointer_cast<Devices::AHCIPort>(dev), *part);
-                    }
+                    if (!known) SYSTEM->create_device<Devices::GPTPartition>(std::static_pointer_cast<Devices::AHCIPort>(dev), *part);
                 }
+
                 /* Don't search port any further, we figured
                  * out it's storage media that is GPT partitioned
                  * and devices have been created for those
@@ -464,7 +505,8 @@ void kstage1(BootInfo* bInfo) {
      * check if a recognized filesystem resides on it.
      */
     VFS& vfs = SYSTEM->virtual_filesystem();
-    for (auto& dev : SYSTEM->Devices) {
+    for (usz i = 0; i < SYSTEM->Devices.size(); ++i) {
+        auto dev = SYSTEM->Devices[i];
         if (dev->major() == SYSDEV_MAJOR_STORAGE
             && dev->flag(SYSDEV_MAJOR_STORAGE_SEARCH) != 0)
         {
@@ -478,7 +520,14 @@ void kstage1(BootInfo* bInfo) {
                                partition->Driver->unique_guid());
                     if (auto FAT = FileAllocationTableDriver::try_create(sdd(partition->Driver))) {
                         std::print("  Found valid File Allocation Table filesystem\n");
-                        vfs.mount(std::format("/fs{}", vfs.mounts().size()), std::move(FAT));
+                        static bool foundEFI = false;
+                        std::string mountPath;
+                        if (!foundEFI && partition->Partition.TypeGUID == GPT::PartitionType$EFISystem) {
+                            mountPath = "/efi";
+                            foundEFI = true;
+                        } else mountPath = std::format("/fs{}", vfs.mounts().size());
+
+                        vfs.mount(mountPath, std::move(FAT));
 
                         // Done searching GPT partition, found valid filesystem.
                         dev->set_flag(SYSDEV_MAJOR_STORAGE_SEARCH, false);
@@ -491,6 +540,10 @@ void kstage1(BootInfo* bInfo) {
                     std::print("  Checking for valid File Allocation Table filesystem\n");
                     if (auto FAT = FileAllocationTableDriver::try_create(sdd(controller->Driver))) {
                         std::print("  Found valid File Allocation Table filesystem\n");
+                        // TODO: Name EFI SYSTEM partition something else to make it separate from
+                        // regular partitions. Eventually should probably also disallow writing to
+                        // EFI SYSTEM mount path unless in very specific circumstances controlled
+                        // by the kernel.
                         vfs.mount(std::format("/fs{}", vfs.mounts().size()), std::move(FAT));
 
                         // Done searching AHCI port, found valid filesystem.
@@ -511,13 +564,23 @@ void kstage1(BootInfo* bInfo) {
            "  Periodic interrupts at \033[33m{}hz\033[0m.\n"
            "\n", static_cast<double>(PIT_FREQUENCY));
 
+
+    for (auto& dev : SYSTEM->Devices) {
+        if (dev->major() == SYSDEV_MAJOR_NETWORK
+            && dev->minor() == SYSDEV_MINOR_E1000) {
+                Devices::E1000Device* e1000Device = static_cast<Devices::E1000Device*>(dev.get());
+                gE1000 = {e1000Device->Header};
+            }
+    }
+
+
     // The Task State Segment in x86_64 is used
     // for switches between privilege levels.
     TSS::initialize();
     Scheduler::initialize();
 
     if (!vfs.mounts().empty()) {
-        constexpr const char* filePath = "/fs0/blazeit";
+        constexpr const char* filePath = "/fs0/bin/blazeit";
         std::print("Opening {} with VFS\n", filePath);
         auto fds = vfs.open(filePath);
 
@@ -528,31 +591,71 @@ void kstage1(BootInfo* bInfo) {
         char tmpBuffer[11]{};
         vfs.read(fds.Process, reinterpret_cast<u8*>(tmpBuffer), 11);
         std::print("{}\n", std::string_view{tmpBuffer, 11});
+        if (fds.valid()) {
+            std::vector<std::string_view> argv;
+            argv.push_back(filePath);
+            if (ELF::CreateUserspaceElf64Process(fds.Process, argv))
+                std::print("Successfully created new process from `{}`\n", filePath);
 
-        if (fds.valid() && ELF::CreateUserspaceElf64Process(fds.Process)) {
-            std::print("Successfully created new process from `/fs0/blazeit`\n");
             std::print("Closing FileDescriptor {}\n", fds.Process);
             vfs.close(fds.Process);
             std::print("FileDescriptor {} closed\n", fds.Process);
             vfs.print_debug();
         }
-        // Another userspace program
-        std::vector<std::string_view> argv;
-        argv.push_back("test");
-        argv.push_back("test2");
-        argv.push_back("test3");
-        argv.push_back("test4");
 
-        constexpr const char* programTwoFilePath = "/fs0/stdout";
+        // Another userspace program
+        constexpr const char *const programTwoFilePath = "/fs0/bin/stdout";
+
+        // Userspace Framebuffer
+        usz fb_phys_addr = (usz)bInfo->framebuffer->BaseAddress;
+        usz fb_virt_addr = 0x7f000000;
+
+        std::vector<std::string_view> argv;
+        argv.push_back(std::format("{}", programTwoFilePath));
+        argv.push_back(std::format("{:x}", fb_virt_addr));
+        argv.push_back(std::format("{:x}", (usz)bInfo->framebuffer->BufferSize));
+        argv.push_back(std::format("{:x}", (usz)bInfo->framebuffer->PixelWidth));
+        argv.push_back(std::format("{:x}", (usz)bInfo->framebuffer->PixelHeight));
+        argv.push_back(std::format("{:x}", (usz)bInfo->framebuffer->PixelsPerScanLine));
+
         std::print("Opening {} with VFS\n", programTwoFilePath);
         fds = vfs.open(programTwoFilePath);
         std::print("  Got FileDescriptors. {}, {}\n", fds.Process, fds.Global);
-        if (fds.valid() && ELF::CreateUserspaceElf64Process(fds.Process, argv)) {
-            std::print("Sucessfully created new process from `/fs0/stdout`\n");
+        if (fds.valid()) {
+            if (ELF::CreateUserspaceElf64Process(fds.Process, argv))
+                std::print("Sucessfully created new process from `{}`\n", programTwoFilePath);
             vfs.close(fds.Process);
         }
         // Get last process in queue from scheduler.
-        SYSTEM->set_init(Scheduler::last_process());
+        Process *process = Scheduler::last_process();
+
+        usz flags = 0;
+        flags |= (usz)Memory::PageTableFlag::Present;
+        flags |= (usz)Memory::PageTableFlag::UserSuper;
+        flags |= (usz)Memory::PageTableFlag::ReadWrite;
+
+        // TODO: We should probably pick this more betterer :Þ
+        for (usz t = 0; t < bInfo->framebuffer->BufferSize; t += PAGE_SIZE) {
+            Memory::map(process->CR3
+                        , (void*)(fb_virt_addr + t)
+                        , (void*)(fb_phys_addr + t)
+                        , flags
+                        , Memory::ShowDebug::No
+                        );
+        }
+        process->add_memory_region((void*)fb_virt_addr
+                                   , (void*)fb_phys_addr
+                                   , bInfo->framebuffer->BufferSize
+                                   , flags
+                                   );
+
+
+        SYSTEM->set_init(process);
+
+        constexpr const char* programTestFilePath = "/fs0/notexist.ing";
+        std::print("Opening {} just for fun\n", programTestFilePath);
+        fds = vfs.open(programTestFilePath);
+        if (fds.valid()) vfs.close(fds.Process);
     }
 
     // Initialize High Precision Event Timer.
@@ -580,5 +683,5 @@ void kstage1(BootInfo* bInfo) {
     // Allow interrupts to trigger.
     std::print("[kstage1]: Enabling interrupts\n");
     asm ("sti");
-    std::print("[kstage1]: \033[32mInterrupts enabled\033[0m\n");
+    //std::print("[kstage1]: \033[32mInterrupts enabled\033[0m\n");
 }

@@ -27,6 +27,13 @@ namespace ACPI {
 }
 
 namespace PCI {
+    enum class BarType {
+        Memory,
+        IO,
+    };
+
+    BarType get_bar_type(u32 BAR);
+
     struct PCIDeviceHeader {
         u16 VendorID;
         u16 DeviceID;
@@ -63,7 +70,7 @@ namespace PCI {
         u8 MinGrant;
         u8 MaxLatency;
     };
-    
+
     void enumerate_pci(ACPI::MCFGHeader* mcfg);
 
     extern const char* DeviceClasses[];

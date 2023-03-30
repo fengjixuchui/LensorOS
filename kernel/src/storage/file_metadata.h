@@ -43,10 +43,14 @@ struct FileMetadata {
         , DriverData(driver_data) {}
 
     ~FileMetadata() {
+        //std::print("Closing FileMetadata \"{}\"\n", Name);
         if (DriverData) {
+            //std::print("  Closing on device driver...\n");
             DeviceDriver->close(this);
         }
     }
+
+    usz offset { 0 };
 
     auto name() -> std::string_view { return Name; }
     auto invalid() -> bool { return Invalid; }
@@ -60,7 +64,7 @@ private:
     // The device driver is used for reading and writing from and to
     // the file.
     std::shared_ptr<StorageDeviceDriver> DeviceDriver { nullptr };
-    u64 FileSize   { -1ull };
+    usz FileSize { -1ull };
     // Driver-specific data.
     void* DriverData { nullptr };
 };

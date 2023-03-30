@@ -78,3 +78,13 @@ extern "C" void memset(void* start, u8 value, u64 numBytes) {
         *(u8*)((u64)start + i) = value;
 }
 
+extern "C" void* memmove(void* dst, const void* src, size_t num) {
+    if (num == 0 || src == dst) return dst;
+    if (src > dst)
+        return memcpy(dst, src, num);
+    else
+        for (usz i = num; i; --i)
+            ((u8*)dst)[i-1] = ((u8*)src)[i-1];
+    return dst;
+}
+
